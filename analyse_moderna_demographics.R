@@ -1,4 +1,4 @@
-# Moderna demographics, recruitment and BLA Figure 1, v1.16.1 -- R 4.3+.
+# Moderna demographics, recruitment and BLA Figure 1, comparison v2.0.0 -- R 4.3+.
 # Save as analyse_moderna_demographics.R in the project root.
 # Open in RStudio, adjust SETTINGS, select all, and Run (or use Source).
 # No options() or separate function call is required. The final line starts it.
@@ -6,15 +6,15 @@
 # The paper's reference counts are used only to report MATCH/MISMATCH.
 # This reconstructs sponsor population flags; it does not independently derive
 # eligibility from raw visits or establish that every exclusion was appropriate.
-# Base/recommended R packages suffice for CSV input, PDF, SVG and PNG output.
+# Base/recommended R packages suffice for CSV input and PNG output.
 # haven is needed only for XPT/SAS7BDAT input; pdftools only for P1 PDF input.
 # P301 JMP support is included: no JMP software, Python or reference CSV required.
 # All study inputs are discovered locally in prod_data_moderna; no network downloads occur.
 # The map uses clinical_trial_sites.csv and screening_map_template.html when present.
 # Leaflet and overview boundaries are embedded: the generated map works offline.
 # Missing map assets do not prevent Figure 1 or recruitment charts.
-# Audit exports: V01 weekly recruitment, V02 populations, V03 static site map.
-# V03 needs clinical_trial_sites.csv coordinates; it does not need the HTML template.
+# Audit exports: V03 weekly recruitment, V04 populations, V05 static site map.
+# V05 needs clinical_trial_sites.csv coordinates; it does not need the HTML template.
 # All three PNGs are refreshed in audit_assets only after they render successfully.
 # First/last recruitment dates by phase are included in HTML and Recruitment_periods.csv.
 # P1 PDF input needs pdftools (or an installed pdftotext command); P2 XPT needs haven.
@@ -22,22 +22,21 @@
 # ---- SETTINGS: edit these values, then run the whole script ----
 
 audit_release_dir <- function(root, legacy) {
-  modern<-paste0(legacy,"_moderna")
-  file.path(root,ifelse(dir.exists(file.path(root,modern)),modern,legacy))
+  file.path(root,paste0(legacy,"_moderna"))
 }
 
 PHMPT_ROOT <- ""                   # Empty = detect project; or "D:/Projects/moderna_trial_analysis"
 PHMPT_SV_FILE <- getOption("phmpt.sv_file","") # Optional explicit P301 BLA Subject Visits source; default: discover production S3 SV.
 PHMPT_ADSL_FILE <- ""             # Empty = find local ADSL; or supply its path
-PHMPT_OUTPUT_DIR <- ""            # Empty = a new dated folder under analysis/
+PHMPT_OUTPUT_DIR <- ""            # Empty = a new run under analysis/moderna/demographics/runs/
 PHMPT_EXCEL_FR <- TRUE             # Also write semicolon-delimited subject CSV
 PHMPT_STRICT <- TRUE               # Stop after saving results if counts disagree
 PHMPT_SHOW_DIAGRAM <- interactive() # Show the diagram in RStudio's Plots pane
-PHMPT_PNG_DPI <- 180L              # Existing report figures
+PHMPT_PNG_DPI <- 300L              # Existing report figures
 PHMPT_AUDIT_DPI <- 300L            # Print PNGs: 8.5 inches wide = 2550 px
-PHMPT_AUDIT_ASSET_DIR <- getOption("phmpt.audit_asset_dir","audit_assets") # Stable V01/V02/V03 files, relative to project root
-PHMPT_SITES_FILE <- "clinical_trial_sites.csv"       # In the project root
-PHMPT_MAP_TEMPLATE <- "screening_map_template.html"  # In the project root
+PHMPT_AUDIT_ASSET_DIR <- getOption("phmpt.moderna_asset_dir","analysis/moderna/demographics/assets") # Stable V03/V04/V05 files, relative to project root
+PHMPT_SITES_FILE <- "clinical_trial_sites_moderna.csv"       # In the project root
+PHMPT_MAP_TEMPLATE <- ""  # In the project root
 PHMPT_P1_FILE <- "" # Empty = discover the local DMID 20-0003 16.1.6 PDF
 PHMPT_P2_FILE <- "" # Empty = discover local P201-d57 ADSL (original or converted)
 # P1/P2/P3 mean clinical trial phases, not P301 Parts A/B/C.
@@ -595,42 +594,20 @@ bla1_svg <- function(d) {
   paste(c(s, '</g></svg>'), collapse = "\n")
 }
 
-bla1_export_diagram <- function(d, output_dir, png_dpi = 180L) {
-  if (length(png_dpi) != 1L || !is.finite(png_dpi) || png_dpi < 72 || png_dpi > 600)
-    stop("PHMPT_PNG_DPI must be between 72 and 600.")
-  path <- function(ext) file.path(output_dir, paste0("BLA_Figure1_diagram.", ext))
-  svg <- bla1_svg(d)
-  writeLines(enc2utf8(svg), path("svg"), useBytes = TRUE)
-  draw_file <- function(open_device) {
-    open_device(); device <- grDevices::dev.cur()
-    on.exit(grDevices::dev.off(device))
-    bla1_draw_diagram(d)
-  }
-  draw_file(function() grDevices::pdf(path("pdf"), width = d$width / 100, height = d$height / 100,
-                                      family = "Helvetica", useDingbats = FALSE, title = d$title))
-  # PDF and SVG remain available if a platform cannot open a bitmap device.
-  tryCatch(draw_file(function() grDevices::png(path("png"), width = d$width / 100,
-      height = d$height / 100, units = "in", res = png_dpi,
-      type = if (capabilities("cairo")) "cairo" else if (.Platform$OS.type == "windows") "windows" else "Xlib")),
-    error = function(e) { if (file.exists(path("png"))) unlink(path("png"));
-      warning("PNG unavailable; PDF/SVG were saved: ", conditionMessage(e), call. = FALSE) })
-  bla1_csv(d$boxes, file.path(output_dir, "BLA_Figure1_diagram_nodes.csv"))
-  cols <- c("node_id", "arm", "observed_n", "expected_n", "difference", "status")
-  rows <- apply(d$counts[cols], 1, function(r) paste0("<tr>", paste0("<td>", bla1_escape(r), "</td>", collapse = ""), "</tr>"))
-  html <- paste0('<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">',
-    '<title>Moderna demographics and recruitment</title><style>body{font:16px/1.5 Arial,sans-serif;color:#172c42;background:#f1f5f9;margin:0;padding:24px}',
-    'main{max-width:1400px;margin:auto}nav,section{padding:20px;background:white;margin:18px 0;border-radius:8px}',
-    'a{color:#175e9c}svg{display:block;width:100%;height:auto;background:white}table{border-collapse:collapse;width:100%}',
-    'th,td{text-align:left;padding:8px;border-bottom:1px solid #d7e0e8}th{background:#edf4fb}.table{overflow-x:auto}</style></head><body><main>',
-    '<nav><b>Subject-derived reconstruction</b> | <a href="BLA_Figure1_diagram.pdf">PDF</a> | ',
-    '<a href="BLA_Figure1_diagram.svg">SVG</a> | <a href="BLA_Figure1_subjects.csv">Participants CSV</a> | ',
-    '<a href="BLA_Figure1_counts.csv">Counts CSV</a> | <a href="Input_discovery_P3.csv">Input discovery</a><br>Counts come from ADSL records. Reference values are comparison targets only.</nav>',
-    svg, '<!-- RECRUITMENT --><section><h2>Calculated counts versus the published figure</h2><p>',
-    'A mismatch is retained and highlighted; it is never replaced by the published value.</p><div class="table"><table><thead><tr>',
-    paste0('<th>', c("Node", "Arm", "Calculated", "Published", "Difference", "Status"), '</th>', collapse = ""),
-    '</tr></thead><tbody>', paste(rows, collapse = "\n"), '</tbody></table></div></section></main></body></html>')
-  writeLines(enc2utf8(html), file.path(output_dir, "demographics.html"), useBytes = TRUE)
-  invisible(path("pdf"))
+bla1_export_diagram <- function(d, output_dir, png_dpi = 300L) {
+  path <- file.path(output_dir,"BLA_Figure1_diagram.png")
+  bla1_audit_png(path,function() bla1_draw_diagram(d),d$width/100,d$height/100,png_dpi)
+  bla1_csv(d$boxes,file.path(output_dir,"BLA_Figure1_diagram_nodes.csv"))
+  cols <- c("node_id","arm","observed_n","expected_n","difference","status")
+  rows <- apply(d$counts[cols],1,function(r) paste0("<tr>",paste0("<td>",bla1_escape(r),"</td>",collapse=""),"</tr>"))
+  html <- paste0('<!doctype html><html lang="en"><meta charset="UTF-8"><title>Moderna BLA demographics</title>',
+    '<style>body{font:16px/1.5 sans-serif;color:#20313e;max-width:1200px;margin:30px auto;padding:20px}img{width:100%;height:auto}td,th{padding:7px;border-bottom:1px solid #ddd}table{border-collapse:collapse}</style><main>',
+    '<h1>Moderna BLA demographics</h1><p>26 March 2021 snapshot. Counts calculated from ADSL; reference values are checks only.</p>',
+    '<img alt="Randomization and analysis populations" src="BLA_Figure1_diagram.png">',
+    '<!-- RECRUITMENT --><h2>Calculated versus published counts</h2><table><tr>',
+    paste0('<th>',cols,'</th>',collapse=''),'</tr>',paste(rows,collapse=''),'</table></main></html>')
+  writeLines(enc2utf8(html),file.path(output_dir,"demographics.html"),useBytes=TRUE)
+  invisible(path)
 }
 
 # ---- RECRUITMENT: P1 DMID 20-0003, P2 P201, P3 P301 ----
@@ -734,12 +711,7 @@ bla1_p2 <- function(path) {
 }
 
 bla1_plot_files <- function(draw, stem, output_dir, width, height, dpi) {
-  device <- function(open) { open(); id <- grDevices::dev.cur(); on.exit(grDevices::dev.off(id)); draw() }
-  device(function() grDevices::pdf(file.path(output_dir, paste0(stem, ".pdf")), width = width, height = height, useDingbats = FALSE))
-  if (capabilities("cairo")) device(function() grDevices::svg(file.path(output_dir, paste0(stem, ".svg")), width = width, height = height))
-  tryCatch(device(function() grDevices::png(file.path(output_dir, paste0(stem, ".png")), width = width,
-    height = height, units = "in", res = dpi, type = if (capabilities("cairo")) "cairo" else if (.Platform$OS.type == "windows") "windows" else "Xlib")),
-    error = function(e) warning("PNG unavailable for ", stem, ": ", conditionMessage(e), call. = FALSE))
+  bla1_audit_png(file.path(output_dir,paste0(stem,".png")),draw,width,height,dpi)
 }
 
 bla1_js_string <- function(x) {
@@ -843,7 +815,7 @@ bla1_recruitment <- function(subjects, root, output_dir, adsl_file, sites_file, 
   map_available <- has_sites && has_template
   sites <- if (has_sites) bla1_table_read(sites_file) else
     data.frame(SITEID=character(),site_name=character(),country=character(),latitude=character(),longitude=character())
-  if (!map_available) message("Map assets incomplete: site counts and other charts will still be generated.")
+  if (!has_sites) warning("Moderna site coordinates missing; supply clinical_trial_sites_moderna.csv.",call.=FALSE)
   bla1_need(sites, c("SITEID", "site_name", "country", "latitude", "longitude"))
   if (any(!nzchar(sites$SITEID)) || anyDuplicated(sites$SITEID)) stop("Site asset has missing/duplicate SITEID values.")
   for (nm in c("latitude", "longitude")) sites[[nm]] <- suppressWarnings(as.numeric(sites[[nm]]))
@@ -929,7 +901,7 @@ bla1_recruitment <- function(subjects, root, output_dir, adsl_file, sites_file, 
     bla1_csv(pair[[1]],file.path(output_dir,pair[[2]]))
   asset_paths <- c(sites_file,template_file); present <- c(has_sites,has_template)
   asset_hashes <- rep("",2L); asset_hashes[present] <- unname(tools::md5sum(asset_paths[present]))
-  bla1_csv(data.frame(asset=c("clinical_trial_sites.csv","screening_map_template.html"),path=asset_paths,status=ifelse(present,"AVAILABLE","MISSING"),md5=asset_hashes),file.path(output_dir,"Recruitment_assets.csv"))
+  bla1_csv(data.frame(asset=c("clinical_trial_sites_moderna.csv","screening_map_template.html"),path=asset_paths,status=ifelse(present,"AVAILABLE","MISSING"),md5=asset_hashes),file.path(output_dir,"Recruitment_assets.csv"))
   if (map_available) bla1_map(site_counts,template_file,output_dir,nrow(subjects))
   colors <- c(P1="#ad6532",P2="#23836b",P3="#236ba4")
   weekly_draw <- function(){
@@ -994,8 +966,7 @@ bla1_recruitment_html <- function(r,output_dir) {
     summary[[nm]][missing] <- ifelse(summary$status[missing] == "UNAVAILABLE", "Unavailable", "No dated records")
   }
   rows<-apply(summary,1,function(z)paste0("<tr>",paste0("<td>",esc(z),"</td>",collapse=""),"</tr>"))
-  picture<-function(stem){ext<-if(file.exists(file.path(output_dir,paste0(stem,".svg"))))"svg" else if(file.exists(file.path(output_dir,paste0(stem,".png"))))"png" else "";
-    if(nzchar(ext))paste0('<img style="width:100%;height:auto" src="',stem,'.',ext,'" alt="',gsub("_"," ",stem),'"><p><a href="',stem,'.pdf">PDF</a> | <a href="',stem,'.csv">CSV</a></p>') else paste0('<p><a href="',stem,'.pdf">Open plot PDF</a></p>')}
+  picture<-function(stem) paste0('<img src="',stem,'.png" alt="',gsub("_"," ",stem),'"><p><a href="',stem,'.csv">CSV</a></p>')
   paste0('<section id="recruitment"><h2>Recruitment across P1, P2 and P3</h2>',
     '<p>P1 uses first-dose dates as a recruitment proxy. P2 and P3 use randomization dates. The phases are separate study cohorts.</p>',
     '<div class="table"><table><thead><tr>',paste0('<th>',c('Phase','Source status','Participants','Dated','Missing dates','First recruitment date','Last recruitment date','Date basis'),'</th>',collapse=''),'</tr></thead><tbody>',paste(rows,collapse=''),'</tbody></table></div>',
@@ -1003,14 +974,14 @@ bla1_recruitment_html <- function(r,output_dir) {
     '<h3>P3 recruitment by site</h3><p><a href="Recruitment_by_site.csv">Site counts CSV</a></p>',
     if(r$map_available) paste0('<p><a href="Recruitment_by_site_map.html">Open interactive map</a></p>',
       '<iframe title="P3 recruitment by site" src="Recruitment_by_site_map.html" style="width:100%;height:680px;border:1px solid #d7e0e8" loading="lazy"></iframe>') else
-      '<p>Map unavailable: place clinical_trial_sites.csv and screening_map_template.html in the project root. Site counts are available above.</p>',
+      '<img alt="P3 recruitment by site" src="audit_assets/V05_recruitment_by_site.png">',
     '<h3>Weekly recruitment</h3>',picture('Recruitment_by_week'),'<h3>Total recruitment by country</h3>',picture('Recruitment_by_country'),
     '<p>Country totals count study participation records. Missing phases are reported as unavailable. Coordinates identify sponsor-listed addresses and can represent campuses or offices.</p>',
     '<p><a href="Recruitment_README.txt">Definitions and source notes</a> | <a href="Recruitment_phase_sources.csv">Phase sources</a> | <a href="Recruitment_subjects.csv">Subject-level recruitment CSV</a></p></section>')
 }
 
 
-# ---- AUDIT ASSETS: V01/V02/V03, print and Substack PNGs ----
+# ---- AUDIT ASSETS: V03/V04/V05, print and Substack PNGs ----
 # Uses the same calculated tables as the report. No screenshots or downloads.
 bla1_audit_number <- function(x) format(x, big.mark = ",", scientific = FALSE, trim = TRUE)
 
@@ -1071,14 +1042,14 @@ bla1_audit_weekly <- function(r) {
     coverage <- if(available) paste0("  |  ",s$dated," dated; ",s$missing_dates," missing") else ""
     graphics::mtext(paste0(period,coverage),side=3,line=0.45,adj=0,cex=0.78,col="#4E606B")
   }
-  graphics::mtext("V01  Weekly recruitment by clinical trial phase",outer=TRUE,side=3,line=2,at=0.035,adj=0,cex=1.3,font=2)
+  graphics::mtext("V03  Weekly recruitment by clinical trial phase",outer=TRUE,side=3,line=2,at=0.035,adj=0,cex=1.3,font=2)
   graphics::mtext("P1: first-dose proxy. P2 and P3: randomization dates.",outer=TRUE,side=3,line=0.5,at=0.035,adj=0,cex=0.9,col="#4E606B")
   graphics::mtext("Monday-start weeks; a common calendar axis and separate vertical scales.",outer=TRUE,side=1,line=0.8,at=0.035,adj=0,cex=0.85,col="#4E606B")
   graphics::mtext("Local PHMPT records; missing dates are excluded from weekly bars.",outer=TRUE,side=1,line=2,at=0.035,adj=0,cex=0.85,col="#4E606B")
 }
 
 bla1_audit_flow <- function(counts) {
-  # A two-column layout replaces the original four-column diagram only in V02.
+  # A two-column layout replaces the original four-column diagram only in V04.
   # Every number still comes from observed_n; status never substitutes reference counts.
   n <- function(id) {
     i <- match(id,counts$node_id)
@@ -1102,7 +1073,7 @@ bla1_audit_flow <- function(counts) {
   }
   arrow <- function(x,y1,y2) grid::grid.lines(x=grid::unit(c(x,x),"native"),y=grid::unit(c(y1,y2),"native"),
     arrow=grid::arrow(length=grid::unit(0.07,"inches"),type="closed"),gp=grid::gpar(col="#617886",fill="#617886",lwd=0.9))
-  txt("V02  Randomization and analysis populations",4,2.3,17,bold=TRUE)
+  txt("V04  Randomization and analysis populations",4,2.3,17,bold=TRUE)
   txt("Moderna P301 | BLA cutoff: 26 March 2021",4,5,11,col="#4E606B")
   box("FIGURE1",paste0(num("FIGURE1")," randomized participants"),21,7,58,4.5,"root",14,TRUE)
   for(pre in c("P","V")) {
@@ -1170,7 +1141,7 @@ bla1_audit_map <- function(r) {
   region[valid & (s$longitude<=-129 | s$longitude>=170) & s$latitude>=50 & s$latitude<=72] <- "AK"
   region[valid & s$longitude>=-161 & s$longitude<=-154 & s$latitude>=18 & s$latitude<=23] <- "HI"
   mapped <- valid & !is.na(region)
-  if(!any(mapped)) stop("V03 requires valid US coordinates in clinical_trial_sites.csv; no sites could be plotted.")
+  if(!any(mapped)) stop("V05 requires valid US coordinates in clinical_trial_sites.csv; no sites could be plotted.")
   key <- paste(region[mapped],sprintf("%.4f",s$longitude[mapped]),sprintf("%.4f",s$latitude[mapped]),sep="|")
   rows <- split(which(mapped),key)
   points <- do.call(rbind,lapply(rows,function(ii)data.frame(region=region[ii[1]],lon=s$longitude[ii[1]],
@@ -1183,7 +1154,7 @@ bla1_audit_map <- function(r) {
     graphics::plot.new();graphics::plot.window(c(0,1),c(0,1),xaxs="i",yaxs="i")
   }
   panel(c(0,1,0.88,1),FALSE)
-  graphics::text(.035,.77,"V03  Phase 3 recruitment by site",adj=0,cex=1.35,font=2,col="#20313E")
+  graphics::text(.035,.77,"V05  Phase 3 recruitment by site",adj=0,cex=1.35,font=2,col="#20313E")
   graphics::text(.035,.43,paste0(bla1_audit_number(total)," randomized participants | ",nrow(s)," recruiting sites"),adj=0,cex=1.05,col="#405663")
   graphics::text(.035,.12,"Circle area represents participants; coincident locations are combined.",adj=0,cex=.9,col="#405663")
   draw_region <- function(which,fig) {
@@ -1236,35 +1207,35 @@ bla1_export_audit_assets <- function(r,counts,root,output_dir,asset_dir="audit_a
   # Render a complete run-specific set first. Failed runs do not publish partial assets.
   stage<-file.path(output_dir,"audit_assets")
   if(!dir.exists(stage)&&!dir.create(stage,recursive=TRUE))stop("Cannot create ",stage)
-  files<-c("V01_weekly_recruitment_by_phase.png","V02_randomization_analysis_populations.png","V03_recruitment_by_site.png")
+  files<-c("V03_weekly_recruitment_by_phase.png","V04_randomization_analysis_populations.png","V05_recruitment_by_site.png")
   dims<-rbind(c(8.5,10),c(8.5,12.8),c(8.5,6.8))
   draw<-list(function()bla1_audit_weekly(r),function()bla1_audit_flow(counts),function()bla1_audit_map(r))
   pixels<-matrix(NA_integer_,3,2)
   for(i in seq_along(files)) pixels[i,]<-bla1_audit_png(file.path(stage,files[i]),draw[[i]],dims[i,1],dims[i,2],dpi)
-  manifest<-data.frame(visual=c("V01","V02","V03"),file=files,width_px=pixels[,1],height_px=pixels[,2],dpi=dpi,
+  manifest<-data.frame(visual=c("V03","V04","V05"),file=files,width_px=pixels[,1],height_px=pixels[,2],dpi=dpi,
     generated_at=format(Sys.time(),"%Y-%m-%dT%H:%M:%S%z"),run_directory=normalizePath(output_dir,winslash="/"),
     source_adsl_md5=r$sources$source_md5[match("P3",r$sources$phase)],
     md5=unname(tools::md5sum(file.path(stage,files))),stringsAsFactors=FALSE)
-  bla1_csv(manifest,file.path(stage,"V01_V03_demographics_manifest.csv"))
-  captions<-c("AUDIT ASSETS: DEMOGRAPHICS (V01-V03)","",
+  bla1_csv(manifest,file.path(stage,"V03_V05_demographics_manifest.csv"))
+  captions<-c("AUDIT ASSETS: DEMOGRAPHICS (V03-V05)","",
     "PNG files are generated from the same calculated counts as demographics.html, at 8.5 inches wide and the configured audit DPI (default 300 = 2550 pixels).",
     "Opaque white backgrounds, large sans-serif text and dedicated narrow-column layouts. Upload the original PNGs to Substack; do not screenshot the HTML.","",
-    "V01: Weekly recruitment by phase. P1 uses first dose as a recruitment proxy; P2/P3 use randomization dates. Monday-start weeks and independent vertical scales. Unavailable phases are labelled, not zero-filled.",
-    "V02: Independently drawn randomization/analysis diagram from observed ADSL counts. Safety follows actual treatment; other populations follow randomized treatment. The count-match statement is last.",
-    "V03: Static P301 recruitment map. Marker area represents participants; coincident coordinates are combined. Insets are shown only for Alaska or Hawaii when that state has a recruiting site. Unmapped/out-of-extent counts are disclosed on the image. Coordinates are not jittered.","",
-    "V03 uses the embedded Natural Earth geometry and clinical_trial_sites.csv. No screenshot tool, web browser, API key, network access or screening_map_template.html is needed for this PNG.",
-    "The existing interactive map still uses screening_map_template.html. Existing report/data/PDF/SVG outputs are preserved.",
-    "These stable V01-V03 filenames are refreshed on successful runs. Other audit_assets files are not changed. A run-specific copy and manifest remain under analysis/.")
-  writeLines(captions,file.path(stage,"V01_V03_demographics_README.txt"),useBytes=TRUE)
+    "V03: Weekly recruitment by phase. P1 uses first dose as a recruitment proxy; P2/P3 use randomization dates. Monday-start weeks and independent vertical scales. Unavailable phases are labelled, not zero-filled.",
+    "V04: Independently drawn randomization/analysis diagram from observed ADSL counts. Safety follows actual treatment; other populations follow randomized treatment. The count-match statement is last.",
+    "V05: Static P301 recruitment map. Marker area represents participants; coincident coordinates are combined. Insets are shown only for Alaska or Hawaii when that state has a recruiting site. Unmapped/out-of-extent counts are disclosed on the image. Coordinates are not jittered.","",
+    "V05 uses the embedded Natural Earth geometry and clinical_trial_sites.csv. No screenshot tool, web browser, API key, network access or screening_map_template.html is needed for this PNG.",
+    "The existing interactive map still uses screening_map_template.html. All exported static figures use PNG.",
+    "These stable V03-V05 filenames are refreshed on successful runs. Other audit_assets files are not changed. A run-specific copy and manifest remain under analysis/.")
+  writeLines(captions,file.path(stage,"V03_V05_demographics_README.txt"),useBytes=TRUE)
   if(!dir.exists(asset_dir)&&!dir.create(asset_dir,recursive=TRUE))stop("Cannot create ",asset_dir)
-  for(name in c(files,"V01_V03_demographics_manifest.csv","V01_V03_demographics_README.txt")) {
+  for(name in c(files,"V03_V05_demographics_manifest.csv","V03_V05_demographics_README.txt")) {
     src<-file.path(stage,name);dst<-file.path(asset_dir,name)
     if(normalizePath(src,winslash="/")!=normalizePath(dst,winslash="/",mustWork=FALSE)) {
       if(!file.copy(src,dst,overwrite=TRUE))stop("Cannot refresh audit asset: ",dst)
       if(unname(tools::md5sum(src))!=unname(tools::md5sum(dst)))stop("Audit asset copy verification failed: ",dst)
     }
   }
-  message("Audit PNGs: ",normalizePath(asset_dir,winslash="/")," (V01, V02, V03; ",dpi," dpi)")
+  message("Audit PNGs: ",normalizePath(asset_dir,winslash="/")," (V03, V04, V05; ",dpi," dpi)")
   invisible(list(directory=asset_dir,manifest=manifest))
 }
 
@@ -1861,7 +1832,7 @@ bla1_screen_index <- function(adsl,sv,out,adsl_file) {
   short<-sub("^.*-(US[0-9]{3})-([0-9]+)$","\\1\\2",u,ignore.case=TRUE)
   j<-match(u,adsl$USUBJID);present<-!is.na(j)
   z<-data.frame(SITEID=substr(short,1,5),subject_number=substring(short,6),SUBJID=short,
-    screening_date="",population=ifelse(!present,"SV only",ifelse(adsl$RANDFL[j]=="Y","Randomized (V03)","ADSL: not randomized")),
+    screening_date="",population=ifelse(!present,"SV only",ifelse(adsl$RANDFL[j]=="Y","Randomized (V05)","ADSL: not randomized")),
     screening_status=if(nzchar(sv$path))"No Screening visit" else "SV unavailable",USUBJID=u,stringsAsFactors=FALSE)
   if(anyDuplicated(short)||any(z$SUBJID[present]!=adsl$SUBJID[j[present]]|z$SITEID[present]!=adsl$SITEID[j[present]]))stop("ADSL/site prefix mismatch or duplicate compact subject ID.")
   # Normalize complete ISO day/datetime only. Retain partial or conflicting values as source text.
@@ -1898,7 +1869,7 @@ bla1_screen_index <- function(adsl,sv,out,adsl_file) {
   .key{padding:.55rem .8rem;border-left:4px solid #ad393c;background:#fff4f3}.unresolved td{background:#f8c8c8;color:#63191b}.unresolved td:first-child{border-left:3px solid #a52e34}.dm-only td{background:#e0c9f4;color:#3e1b60}.dm-only td:first-child{border-left:3px solid #713a9a}.eua-found td{background:#ffd39c;color:#502800}.eua-found td:first-child{border-left:3px solid #ad5307}.internal,.leading,.internal td,.leading td,.eua-found,.eua-found td,.dm-only,.dm-only td,.unresolved,.unresolved td,.legend-eua,.legend-dm,.legend-absent{print-color-adjust:exact;-webkit-print-color-adjust:exact}.legend-eua,.legend-dm,.legend-absent{padding:.1rem .3rem;border-radius:3px}.legend-eua{background:#ffd39c;color:#502800}.legend-dm{background:#e0c9f4;color:#3e1b60}.legend-absent{background:#f8c8c8;color:#63191b}details{margin:1rem 0}summary{cursor:pointer;font-weight:600}
   @page{margin:14mm}@media print{body{max-width:none;margin:0;padding:0;font:10pt/1.2 sans-serif}nav,.download{display:none}table{font-size:9pt}h1{font-size:15pt}h2{font-size:12pt;break-after:avoid}thead{display:table-header-group}tr{break-inside:avoid}section{margin-top:6pt}th,td{padding:2pt 5pt}}
   </style></head><body><h1>P301 subject screening index</h1>')
-  wr('<p><strong>',num(nrow(z)),' subject IDs</strong> across ',length(sites),' sites. ',num(sum(z$population=="Randomized (V03)")),' are in the V03 randomized population. A full screening date is recorded for ',num(sum(nzchar(z$screening_date))),' IDs. ',
+  wr('<p><strong>',num(nrow(z)),' subject IDs</strong> across ',length(sites),' sites. ',num(sum(z$population=="Randomized (V05)")),' are in the V05 randomized population. A full screening date is recorded for ',num(sum(nzchar(z$screening_date))),' IDs. ',
     if(!nzchar(sv$path))'<strong>ADSL-only export: the screening visit file was unavailable.</strong>' else '', '</p>')
   wr('<p>Screening date is the start date (SVSTDTC) of the visit named <b>Screening</b>. Previous and unscheduled screening dates are separate fields in the CSV. “SV only” means the ID appears in screening records but not in this BLA ADSL; it does not assign a reason for non-randomization.</p>')
   wr('<p class="muted">Source: ',esc(basename(adsl_file)),if(nzchar(sv$path))paste0(' and ',esc(basename(sv$path))) else '', '. <span class="download"><a href="P301_subject_screening_index.csv">Companion CSV</a></span></p>')
@@ -1923,10 +1894,10 @@ bla1_screen_index <- function(adsl,sv,out,adsl_file) {
     wr('<p class="key"><b>Reading the highlighted rows:</b> <span class="legend-eua">Orange</span> means the identifier was found in EUA ADSL, whether or not it is also in BLA DM; the row gives its recorded randomization flag. <span class="legend-dm">Purple</span> means it was found in BLA DM but not EUA ADSL. <span class="legend-absent">Red</span> means it was found in neither comparison roster. Internal gaps and assumed leading positions are distinguished by their row labels. Each highlighted row is absent from the BLA screening index; it has no imputed screening date and does not increase the subject count. The filters never create new gaps.</p>')
   }else wr('<p class="key"><b>Numbering audit unavailable:</b> no complete Subject Visits source. An ADSL-only index would create artificial gaps; no placeholder rows have been added.</p>')
   wr('<p class="download"><a href="P301_numbering_by_site.csv">Site-level sequence statistics</a> | <a href="P301_numbering_gaps.csv">Missing positions and source checks</a></p>')
-  wr('<nav hidden id="tools"><div class="tools"><label>Site <select id="site"><option value="">All sites</option>',paste0('<option>',sites,'</option>',collapse=""),'</select></label><label>Show <select id="pop"><option value="">Observed IDs and missing positions</option><option value="O">Observed IDs only</option><option value="I">Internal gaps only</option><option value="E">Gaps found in EUA ADSL (orange)</option><option value="D">Gaps found only in BLA DM (purple)</option><option value="U">Absent from both reference rosters (red)</option><option value="L">Assumed leading positions only</option><option value="R">Randomized (V03)</option><option value="N">ADSL: not randomized</option><option value="S">SV only</option></select></label><label>Subject ID or number <input id="q" type="search" size="13"></label><button id="print" type="button">Print selection</button></div></nav><p id="result"></p>')
+  wr('<nav hidden id="tools"><div class="tools"><label>Site <select id="site"><option value="">All sites</option>',paste0('<option>',sites,'</option>',collapse=""),'</select></label><label>Show <select id="pop"><option value="">Observed IDs and missing positions</option><option value="O">Observed IDs only</option><option value="I">Internal gaps only</option><option value="E">Gaps found in EUA ADSL (orange)</option><option value="D">Gaps found only in BLA DM (purple)</option><option value="U">Absent from both reference rosters (red)</option><option value="L">Assumed leading positions only</option><option value="R">Randomized (V05)</option><option value="N">ADSL: not randomized</option><option value="S">SV only</option></select></label><label>Subject ID or number <input id="q" type="search" size="13"></label><button id="print" type="button">Print selection</button></div></nav><p id="result"></p>')
   for(site in sites){ii<-which(z$SITEID==site);a<-z[ii,];st<-seqcheck$sites[seqcheck$sites$SITEID==site,]
     wr('<section id="',site,'"><h2>',site,' <span class="count">',num(nrow(a)),' observed IDs',if(seqcheck$complete)paste0(' | ',st$internal_gaps,' internal gaps | ',st$leading_from_2001,' assumed leading positions')else "",'</span></h2><table><thead><tr><th>Site ID</th><th>Subject number</th><th>Subject ID / candidate</th><th>Screening date</th><th>Population / gap evidence</th></tr></thead><tbody>')
-    rr<-paste0('<tr data-id="',a$SUBJID,'" data-pop="',ifelse(a$population=="Randomized (V03)","R",ifelse(a$population=="SV only","S","N")),'"><td>',site,'</td><td>',a$subject_number,'</td><td>',a$SUBJID,'</td><td class="date">',
+    rr<-paste0('<tr data-id="',a$SUBJID,'" data-pop="',ifelse(a$population=="Randomized (V05)","R",ifelse(a$population=="SV only","S","N")),'"><td>',site,'</td><td>',a$subject_number,'</td><td>',a$SUBJID,'</td><td class="date">',
       ifelse(nzchar(a$screening_date),a$screening_date,paste0('<span class="missing">',esc(a$screening_status),'</span>')),'</td><td>',esc(a$population),'</td></tr>')
     nums<-as.integer(a$subject_number);g<-seqcheck$gaps[seqcheck$gaps$SITEID==site,,drop=FALSE]
     if(nrow(g)){
@@ -1943,11 +1914,11 @@ bla1_screen_index <- function(adsl,sv,out,adsl_file) {
 
 analyse_moderna_demographics <- function(root = "", adsl_file = NULL,
   output_dir = NULL, excel_fr = TRUE, strict = TRUE, show_diagram = interactive(), png_dpi = 180L,
-  sites_file = "clinical_trial_sites.csv", template_file = "screening_map_template.html", p1_file = "", p2_file = "",
-  audit_asset_dir = "audit_assets", audit_dpi = 300L, sv_file=getOption("phmpt.sv_file","")) {
+  sites_file = "clinical_trial_sites_moderna.csv", template_file = "screening_map_template.html", p1_file = "", p2_file = "",
+  audit_asset_dir = "analysis/moderna/demographics/assets", audit_dpi = 300L, sv_file=getOption("phmpt.sv_file","")) {
   root <- bla1_project_root(root)
   if (is.null(output_dir) || !nzchar(output_dir)) {
-    analysis <- file.path(root, "analysis")
+    analysis <- file.path(root, "analysis", "moderna", "demographics", "runs")
     if (!dir.exists(analysis) && !dir.create(analysis, recursive = TRUE)) stop("Cannot create: ", analysis)
     output_dir <- tempfile(paste0("demographics_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_"), tmpdir = analysis)
   } else if (!grepl("^(/|[A-Za-z]:[/\\\\]|\\\\\\\\)", output_dir)) output_dir <- file.path(root, output_dir)
@@ -2019,12 +1990,12 @@ analyse_moderna_demographics <- function(root = "", adsl_file = NULL,
     paste("Published count comparisons:", nrow(nodes$counts)),
     paste("Mismatches:", sum(nodes$counts$status != "MATCH")),
     "", "CSV: comma-delimited UTF-8 with BOM. Excel_FR: semicolon-delimited version of the same records.",
-    "BLA_Figure1_diagram.pdf/.svg/.png: diagram redrawn from calculated ADSL counts. No source figure image is used.",
+    "BLA_Figure1_diagram.png: diagram redrawn from calculated ADSL counts. No source figure image is used.",
     "demographics.html: figure, recruitment map, weekly/country plots, and observed-versus-published count table.",
     "The published-count match statement appears at the end of the summary below the figure.",
     "P301_subject_screening_index.html/.csv: subject IDs from ADSL and screening visits, sorted by site and numeric subject number. Screening date = SVSTDTC of the visit named Screening; no date proxies. See P301_subject_index_sources.csv.",
     "Recruitment_by_site_map.html: interactive P3 map generated from the two assets in the project root.",
-    "Recruitment_by_week and Recruitment_by_country: CSV data and PDF/PNG/SVG plots.",
+    "Recruitment_by_week and Recruitment_by_country: CSV data and PNG plots.",
     "Recruitment_periods.csv: first and last observed recruitment dates by phase, with cohort, date basis and missing-date counts; also shown in demographics.html.",
     "Recruitment_README.txt and Recruitment_phase_sources.csv: cohort definitions, date proxies, source status and hashes.",
     "BLA_Figure1_diagram_nodes.csv: diagram text and the count-node identifiers used for each box.",
@@ -2042,12 +2013,14 @@ analyse_moderna_demographics <- function(root = "", adsl_file = NULL,
     "Input_discovery_P1/P2/P3.csv record candidate files, rejection reasons, duplicate copies and selected sources.",
     "Equivalent file formats are compared on the fields used in this analysis; conflicting valid snapshots require an explicit choice.",
     "Original JMP/XPT/SAS formats are preferred when readable. An equivalent converted CSV is also supported.",
-    "clinical_trial_sites.csv supplies coordinates for V03. screening_map_template.html is needed only by the interactive HTML map.",
-    "audit_assets: V01_weekly_recruitment_by_phase.png, V02_randomization_analysis_populations.png and V03_recruitment_by_site.png; print/Substack layouts at PHMPT_AUDIT_DPI (default 300).",
+    "clinical_trial_sites.csv supplies coordinates for V05. screening_map_template.html is needed only by the interactive HTML map.",
+    "audit_assets: V03_weekly_recruitment_by_phase.png, V04_randomization_analysis_populations.png and V05_recruitment_by_site.png; print/Substack layouts at PHMPT_AUDIT_DPI (default 300).",
     "A complete run-specific PNG set and its manifest are also retained under this results directory.",
     "The input path and SOURCE_MD5 identify the exact source analyzed in this run."),
     file.path(output_dir, "README.txt"), useBytes = TRUE)
   capture.output(sessionInfo(), file = file.path(output_dir, "sessionInfo.txt"))
+  bad <- any(nodes$counts$status != "MATCH") || any(x$FIGURE1_BRANCH == "UNRESOLVED")
+  if (bad && strict) stop("BLA discrepancy: run-specific outputs retained; stable assets not refreshed.")
   audit_assets <- bla1_export_audit_assets(recruitment, nodes$counts, root, output_dir,
     asset_dir = audit_asset_dir, dpi = audit_dpi)
   audit_links <- paste0('<section><h2>Audit PNGs for print / Substack</h2><p>',
@@ -4354,7 +4327,7 @@ bla1_map_asset <- function(name) {
 }
 
 # ---- RUN: starts automatically when the whole script is executed ----
-analyse_moderna_demographics(root = PHMPT_ROOT, adsl_file = PHMPT_ADSL_FILE,
+if (isTRUE(getOption("phmpt.demographics.autorun",TRUE))) analyse_moderna_demographics(root = PHMPT_ROOT, adsl_file = PHMPT_ADSL_FILE,
   output_dir = PHMPT_OUTPUT_DIR, excel_fr = PHMPT_EXCEL_FR, strict = PHMPT_STRICT,
   show_diagram = PHMPT_SHOW_DIAGRAM, png_dpi = PHMPT_PNG_DPI,
   sites_file = PHMPT_SITES_FILE, template_file = PHMPT_MAP_TEMPLATE,

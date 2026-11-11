@@ -1,4 +1,4 @@
-# Pfizer / Moderna US recruitment-site comparison v2.2.0 -- R 4.3+.
+# Pfizer / Moderna US recruitment-site comparison v2.3.1 -- R 4.3+.
 # Place the three R scripts and both clinical_trial_sites_*.csv in the repo root.
 # Run this entire file in RStudio or with Rscript. It reads original inputs afresh;
 # running the two individual analyses first is optional. No prior outputs are pooled.
@@ -13,7 +13,7 @@ PHMPT_OUTPUT_DIR <- ""               # Empty: new timestamped comparison run.
 PHMPT_MODERNA_ADSL_FILE <- ""         # Optional explicit Moderna BLA ADSL path.
 PHMPT_MODERNA_SITES <- "clinical_trial_sites_moderna.csv"
 PHMPT_PFIZER_SITES <- "clinical_trial_sites_pfizer.csv"
-PHMPT_COMPARE_AGE_MIN <- NULL         # NULL = native BLA cohorts; 18 = recorded AGE>=18 in both.
+PHMPT_COMPARE_AGE_MIN <- 18           # Default: recorded AGE>=18 in both; NULL restores native BLA cohorts.
 PHMPT_PNG_DPI <- 300L
 PHMPT_ASSET_DIR <- "analysis/comparison/usa_demographics/assets"
 PHMPT_WRITE_GIF <- TRUE
@@ -307,7 +307,7 @@ cmp_write_gif <- function(p,sites,recruitment,colours,subtitles,out,mode="cumula
 
 compare_pfizer_moderna_usa_demographics <- function(root="",output_dir="",moderna_adsl_file="",
   moderna_sites="clinical_trial_sites_moderna.csv",pfizer_sites="clinical_trial_sites_pfizer.csv",
-  age_min=NULL,dpi=300L,asset_dir="analysis/comparison/usa_demographics/assets",
+  age_min=18,dpi=300L,asset_dir="analysis/comparison/usa_demographics/assets",
   write_gif=TRUE,gif_mode="cumulative",gif_dpi=150L,gif_delay=.8,keep_gif_frames=TRUE) {
   root<-cmp_root(root)
   m<-cmp_load(file.path(root,"analyse_moderna_demographics.R"))
@@ -380,8 +380,11 @@ compare_pfizer_moderna_usa_demographics <- function(root="",output_dir="",modern
     coordinate_rounding_for_coincidence=4)
   p$pf_csv(contract,file.path(output_dir,"Map_scale_contract.csv"))
   age_note<-if(is.null(age_min))"" else paste0("; recorded AGE >= ",age_min)
-  subtitles<-c(Moderna=paste0("BLA 26 March 2021 | randomized Phase 3, adult cohort",age_note),
-    Pfizer=paste0("BLA 13 March 2021 | randomized Phase 2/3, sponsor age group 16+",age_note))
+  subtitles<-if(is.null(age_min))c(
+    Moderna="BLA 26 March 2021 | randomized Phase 3, adult cohort",
+    Pfizer="BLA 13 March 2021 | randomized Phase 2/3, sponsor age group 16+") else c(
+    Moderna=paste0("BLA 26 March 2021 | randomized Phase 3 | recorded AGE >= ",age_min),
+    Pfizer=paste0("BLA 13 March 2021 | randomized Phase 2/3 | recorded AGE >= ",age_min))
   attr(subtitles,"age_note")<-age_note
   filename<-"Pfizer_Moderna_USA_demographics_stacked.png"
   overlay_filename<-"Pfizer_Moderna_USA_demographics_overlaid.png"
@@ -403,11 +406,12 @@ compare_pfizer_moderna_usa_demographics <- function(root="",output_dir="",modern
     "Only subject COUNTRY=USA/US/United States is included; country filtering precedes plotting.",
     "Moderna may fill missing COUNTRY from its supplied site catalogue; the count is exported.",
     "Native populations differ: Moderna P301 adult randomized; Pfizer Phase 2/3 sponsor age group 16+.",
-    "Set PHMPT_COMPARE_AGE_MIN=18 for an additional recorded AGE>=18 filter in both. This is a sensitivity cohort, not the native BLA denominator.",
+    "Default PHMPT_COMPARE_AGE_MIN=18 applies recorded AGE>=18 in both trials before site aggregation, map rendering and animation. Missing age is excluded.",
+    "Set PHMPT_COMPARE_AGE_MIN=NULL to restore the native sponsor BLA cohorts. Native BLA reference checks remain unfiltered.",
     "Pfizer retains its Phase 2 subset, as required by its BLA Phase 2/3 population definition.",
     "Same projection, geographic extents, panel dimensions and participant-to-circle-area scale in both stacked maps and the overlaid PNG.",
     "Display covers the contiguous United States only, without Alaska/Hawaii insets. All-USA cohort totals remain in audit tables.",
-    "The original cohort contains Pfizer site 1177 in Honolulu. Its 564 participants are off map in the native cohort, not deleted from the data.",
+    paste0("Pfizer participants outside the contiguous-US display after any age filter: ",population$outside_display_subjects[population$manufacturer=="Pfizer"],". Site 1177 (Honolulu) is retained in the US tables."),
     "The legend has a dedicated opaque viewport below the map. Map drawing is clipped to its own viewport.",
     "Coincident coordinates are combined. No random jitter or inferred subject allocation among alternate addresses.",
     "Pfizer coordinates are mostly city-level ClinicalTrials.gov points matched to cities/states in the BLA investigator listing; see site catalogue for exceptions.",
@@ -435,7 +439,7 @@ compare_pfizer_moderna_usa_demographics <- function(root="",output_dir="",modern
     }
   }
   message("Completed contiguous-US comparison: ",output_dir," (stacked PNG, overlaid PNG",if(write_gif)" and GIF" else "", ")")
-  invisible(list(output_dir=output_dir,scope=population,sites=sites,scale=contract,recruitment=recruitment,gif=gif))
+  invisible(list(output_dir=output_dir,scope=population,sites=sites,scale=contract,recruitment=recruitment,recruitment_subjects=recruitment_subjects,gif=gif))
 }
 
 if(isTRUE(getOption("phmpt.demographics.autorun",TRUE))) compare_pfizer_moderna_usa_demographics(
