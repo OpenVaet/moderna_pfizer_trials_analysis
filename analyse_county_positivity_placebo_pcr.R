@@ -1,9 +1,9 @@
-# County background positivity and symptomatic placebo PCR records | v2.0.0
+# County background positivity and symptomatic placebo PCR records | v2.1.0
 # Only the two supplied native-table extractors are sourced. No prior reports,
 # derived audit CSVs, demographics scripts or background-map scripts are read.
 # First run downloads CDC county positivity; subsequent runs verify its raw cache.
 PHMPT_COUNTY_ROOT <- getwd()
-PHMPT_COUNTY_INPUTS <- list(moderna_adsl='',moderna_mb='',moderna_admb='',moderna_suppmb='',moderna_adsymp='',
+PHMPT_COUNTY_INPUTS <- list(moderna_adsl='',moderna_mb='',moderna_admb='',moderna_suppmb='',moderna_adsymp='',moderna_ce='',
   pfizer_adsl='',pfizer_mb='',pfizer_adsympt='',county_background='',site_counties='')
 PHMPT_COUNTY_OUTPUT <- ''
 PHMPT_COUNTY_START <- '2020-07-23'
@@ -122,6 +122,83 @@ cp_background <- function(root,start,end,output,raw_file='',refresh=FALSE) {
  cp_csv(d,file.path(output,'county_background_used.csv'));cp_csv(do.call(rbind,lapply(logs,as.data.frame)),file.path(output,'background_download_manifest.csv'))
  list(data=d,manifest=data.frame(input='county_background',path=normalizePath(f,winslash='/'),md5=unname(tools::md5sum(f))))
 }
+
+# Same operational recovery definition as the participant-rate report.
+cr_text<-cp_text;cr_yes<-cp_yes;cr_date<-cp_date;cr_need<-cp_need;cr_csv<-cp_csv
+cr_subject<-function(x,trial){x<-cp_subject(x);if(trial=='Moderna')x<-sub('^MRNA1273P301','',x);x}
+cr_key<-function(trial,subject)paste(trial,subject,sep='|')
+# One participant is removed permanently after the first complete linked illness
+# resolution. The recovery day remains eligible. Removal cannot precede the
+# first qualifying positive PCR used to establish the linked illness.
+cr_recovery <- function(tests,pfizer,moderna_sym,moderna_ce,out) {
+ pos<-tests[cr_yes(tests$included_before_geography),,drop=FALSE]
+ pos$date<-cr_date(pos$date);pos<-pos[order(pos$trial,pos$subject,pos$date,pos$record_id),]
+ first<-pos[!duplicated(cr_key(pos$trial,pos$subject)),c('trial','subject','date')];names(first)[3]<-'first_positive'
+ q<-first;q$recovery_date<-rep(as.Date(NA),nrow(q));q$effective_removal_date<-rep(as.Date(NA),nrow(q));q$status<-rep('unresolved',nrow(q));q$reason<-q$source_ids<-q$episode_id<-rep('',nrow(q));q$positive_records_after_removal<-integer(nrow(q))
+
+ p<-pfizer
+ cr_need(p,c('USUBJID','PARCAT1','AVALC','ASTDT','AENDT','VISIT','VISITNUM'),'Pfizer ADSYMPT')
+ p$row<-seq_len(nrow(p));p$subject<-cr_subject(p$USUBJID,'Pfizer');p$start<-cr_date(p$ASTDT);p$end<-cr_date(p$AENDT)
+ p$affirmative<-toupper(cr_text(p$PARCAT1))=='SIGNS AND SYMPTOMS OF DISEASE'&cr_yes(p$AVALC)
+ p$episode<-paste(p$subject,cr_text(p$VISITNUM),cr_text(p$VISIT),sep='|')
+ pgroup<-split(which(p$affirmative),p$episode[p$affirmative])
+
+ a<-moderna_sym
+ cr_need(a,c('USUBJID','ASEQ','LNKID'),'Moderna ADSYMP');a$subject<-cr_subject(a$USUBJID,'Moderna');a$form<-sub('-[0-9]+$','',cr_text(a$LNKID));ak<-paste(a$subject,cr_text(a$ASEQ),sep='|')
+ if(anyDuplicated(ak))stop('Moderna subject/ASEQ not unique.')
+ c<-moderna_ce
+ cr_need(c,c('USUBJID','CESEQ','CESPID','CETERM','CECAT','CEOCCUR','CESTDTC','CEENDTC'),'Moderna CE')
+ c$subject<-cr_subject(c$USUBJID,'Moderna');c$form<-sub('-[0-9]+$','',cr_text(c$CESPID));c$start<-cr_date(c$CESTDTC);c$end<-cr_date(c$CEENDTC)
+ c<-c[toupper(cr_text(c$CECAT))=='EFFICACY'&cr_yes(c$CEOCCUR),,drop=FALSE]
+ c$episode<-paste(c$subject,c$form,sep='|');cgroup<-split(seq_len(nrow(c)),c$episode)
+ tgroup<-split(seq_len(nrow(pos)),cr_key(pos$trial,pos$subject))
+ evidence<-list()
+ for(i in seq_len(nrow(q))) {
+  ti<-tgroup[[cr_key(q$trial[i],q$subject[i])]];tt<-pos[ti,,drop=FALSE]
+  # Use the first positive day's symptom links; no later unrelated illness is
+  # allowed to supply a missing recovery date for the first illness.
+  ids<-unique(unlist(strsplit(paste(tt$symptom_source_ids[tt$date==q$first_positive[i]],collapse=';'),';',fixed=TRUE)))
+  if(q$trial[i]=='Pfizer') {
+   rows<-suppressWarnings(as.integer(sub('^ADSYMPT row ','',ids)));rows<-rows[!is.na(rows)&rows>0&rows<=nrow(p)];rows<-rows[p$subject[rows]==q$subject[i]&p$affirmative[rows]]
+   ep<-unique(p$episode[rows]);groups<-lapply(ep,function(e)pgroup[[e]])
+   if(length(ep)!=1){q$reason[i]<-'first positive links to zero or multiple illness visits';next}
+   rows<-groups[[1]];lo<-p$start[rows];hi<-p$end[rows];src<-paste0('ADSYMPT row ',p$row[rows]);terms<-p$PARAMCD[rows]
+  }else{
+   seqs<-sub('^ADSYMP:','',ids);rows<-match(paste(q$subject[i],seqs,sep='|'),ak);rows<-rows[!is.na(rows)]
+   forms<-unique(a$form[rows]);forms<-forms[nzchar(forms)];ep<-paste(q$subject[i],forms,sep='|')
+   # EDC form-ID stem linkage is recorded explicitly in the audit. Do not
+   # fall back to nearest date when the identifiers fail or are ambiguous.
+   if(length(ep)!=1||!length(cgroup[[ep]])){q$reason[i]<-'no unique ADSYMP LNKID / CE CESPID form-stem link';next}
+   rows<-cgroup[[ep]];lo<-c$start[rows];hi<-c$end[rows];src<-paste0('CESEQ ',cr_text(c$CESEQ[rows]));terms<-c$CETERM[rows]
+  }
+  q$episode_id[i]<-ep;q$source_ids[i]<-paste(src,collapse=';')
+  evidence[[length(evidence)+1L]]<-data.frame(trial=q$trial[i],subject=q$subject[i],episode_id=ep,source_id=src,term=terms,onset=lo,resolution=hi)
+  if(!length(hi)||anyNA(hi)){q$reason[i]<-'at least one affirmative symptom has no complete end date';next}
+  if(any(!is.na(lo)&hi<lo)){q$reason[i]<-'symptom end precedes onset';next}
+  q$recovery_date[i]<-max(hi)
+  q$effective_removal_date[i]<-max(q$first_positive[i],q$recovery_date[i])+1
+  q$status[i]<-'recorded symptom resolution proxy';q$reason[i]<-if(q$trial[i]=='Moderna')'all affirmative efficacy CE symptoms ended; form-ID stem linkage' else 'all affirmative illness-visit symptom records ended'
+ }
+ for(i in seq_len(nrow(q))){z<-pos[tgroup[[cr_key(q$trial[i],q$subject[i])]],];q$positive_records_after_removal[i]<-if(is.na(q$effective_removal_date[i]))0L else sum(z$date>=q$effective_removal_date[i])}
+ cr_csv(q,file.path(out,'participant_recovery_ledger.csv'))
+ if(length(evidence))cr_csv(do.call(rbind,evidence),file.path(out,'recovery_source_evidence.csv'))
+ q
+}
+
+
+# Participants with any eligible day in the week; a within-week resolution
+# retains the participant in that week's denominator, as in the rate report.
+cp_risk_metrics <- function(z,weeks,ends) {
+ E<-R<-U<-integer(length(weeks))
+ for(k in seq_along(weeks)) {
+  q<-z[!is.na(z$followup_start)&!is.na(z$followup_end)&z$followup_start<=ends[k]&z$followup_end>=weeks[k],,drop=FALSE]
+  removed<-!is.na(q$effective_removal_date)&q$effective_removal_date<=pmax(q$followup_start,weeks[k])
+  E[k]<-nrow(q);R[k]<-sum(removed)
+  U[k]<-sum(!removed&!is.na(q$first_positive)&q$first_positive<=ends[k]&is.na(q$effective_removal_date))
+ }
+ data.frame(exposed=E,recovered_removed=R,at_risk=E-R,unresolved_recovery=U)
+}
+
 analyse_county_positivity_placebo_pcr <- function(root=PHMPT_COUNTY_ROOT,inputs=PHMPT_COUNTY_INPUTS,
  output=PHMPT_COUNTY_OUTPUT,start=PHMPT_COUNTY_START,end=PHMPT_COUNTY_END,
  age_min=PHMPT_COUNTY_AGE_MIN,threshold=PHMPT_COUNTY_THRESHOLD,
@@ -140,7 +217,7 @@ analyse_county_positivity_placebo_pcr <- function(root=PHMPT_COUNTY_ROOT,inputs=
  message('[1/5] Extracting native Moderna and Pfizer inputs')
  me<-cp_load(file.path(root,'extract_moderna_county_inputs.R'));pe<-cp_load(file.path(root,'extract_pfizer_county_inputs.R'))
  arg<-function(trial,domains)setNames(lapply(tolower(domains),function(d){v<-inputs[[paste0(trial,'_',d)]];if(is.null(v))'' else v}),domains)
- m<-me$extract_moderna_county_inputs(root,files=arg('moderna',c('ADSL','MB','ADMB','SUPPMB','ADSYMP')),output=file.path(output,'Moderna'),age_min=age_min,placebo_window=placebo_window,lookback=lookback)
+ m<-me$extract_moderna_county_inputs(root,files=arg('moderna',c('ADSL','MB','ADMB','SUPPMB','ADSYMP','CE')),output=file.path(output,'Moderna'),age_min=age_min,placebo_window=placebo_window,lookback=lookback)
  p<-pe$extract_pfizer_county_inputs(root,files=arg('pfizer',c('ADSL','MB','ADSYMPT')),output=file.path(output,'Pfizer'),age_min=age_min,placebo_window=placebo_window,lookback=lookback)
  r<-rbind(p$roster,m$roster);g<-rbind(p$sites,m$sites)
  # Optional reviewed override; the default lookup is embedded in the extractors.
@@ -166,6 +243,11 @@ analyse_county_positivity_placebo_pcr <- function(root=PHMPT_COUNTY_ROOT,inputs=
  kk<-paste(tests$trial,tests$subject,tests$specimen_ref);tests$repeated_specimen_reference<-nzchar(tests$specimen_ref)&(duplicated(kk)|duplicated(kk,fromLast=TRUE))
  cp_csv(tests,file.path(output,"PCR_record_ledger.csv"));cp_csv(tests[tests$included,,drop=FALSE],file.path(output,"included_positive_symptomatic_PCR.csv"))
  cp_csv(as.data.frame(table(tests$trial,tests$exclusion)),file.path(output,"PCR_inclusion_flow.csv"))
+ message('Reconstructing weekly population at risk from native symptom-resolution evidence')
+ recovery<-cr_recovery(tests,p$recovery_symptoms,m$recovery_symptoms,m$recovery_ce,output)
+ j<-match(cr_key(r$trial,r$subject),cr_key(recovery$trial,recovery$subject))
+ r$first_positive<-recovery$first_positive[j];r$effective_removal_date<-recovery$effective_removal_date[j];r$recovery_status<-recovery$status[j]
+ cp_csv(r,file.path(output,'participant_denominator_ledger.csv'))
  message("[3/5] Joining exact weekly county background observations")
  background<-cp_background(root,start,end,output,if(is.null(inputs$county_background))'' else inputs$county_background,refresh_background)
  b<-background$data
@@ -188,21 +270,29 @@ analyse_county_positivity_placebo_pcr <- function(root=PHMPT_COUNTY_ROOT,inputs=
   for(tr in names(cutoffs)) {
    z<-rr[rr$trial==tr&rr$placebo&!is.na(rr$followup_start)&!is.na(rr$followup_end),,drop=FALSE]
    pdays<-if(nrow(z))vapply(seq_along(weeks),function(k)sum(pmax(0,as.numeric(pmin(z$followup_end,ends[k])-pmax(z$followup_start,weeks[k]))+1)),numeric(1)) else rep(0,N)
+   risk<-cp_risk_metrics(z,weeks,ends)
+   for(n in names(risk))w[[paste0(tr,'_',n)]]<-risk[[n]]
    w[[paste0(tr,"_placebo_person_days")]]<-pdays
    status<-ifelse(weeks>as.Date(cutoffs[tr]),"after source cutoff",ifelse(pdays==0,"no eligible placebo follow-up",ifelse(ends>as.Date(cutoffs[tr]),"partial source week","observed follow-up")))
    w[[paste0(tr,"_coverage")]]<-status
    if(any(w[[tr]]>0&pdays==0))stop("PCR count without corresponding placebo follow-up.")
    w[[tr]][pdays==0]<-NA_integer_
   }
+  w$pooled_at_risk<-w$Pfizer_at_risk+w$Moderna_at_risk
+  w$pooled_exposed<-w$Pfizer_exposed+w$Moderna_exposed
+  w$pooled_recovered_removed<-w$Pfizer_recovered_removed+w$Moderna_recovered_removed
+  w$unresolved_recovery<-w$Pfizer_unresolved_recovery+w$Moderna_unresolved_recovery
+  w$at_risk_scope<-ifelse(w$Pfizer_at_risk>0&w$Moderna_at_risk>0,'both trials',ifelse(w$Pfizer_at_risk>0,'Pfizer only',ifelse(w$Moderna_at_risk>0,'Moderna only','none')))
   w$weekly_observed_total<-rowSums(w[,c("Pfizer","Moderna")],na.rm=TRUE)
   w$cumulative_observed_total<-cumsum(w$weekly_observed_total)
   w$cumulative_recruited<-if(nrow(rr))vapply(ends,function(e)sum(!is.na(rr$RANDDT)&rr$RANDDT<=e),integer(1)) else rep(0L,N)
   allweeks[[i]]<-w
   summary<-data.frame(county_fips=f,county=cc$name[i],state=cc$state[i],recruited=sum(rr$recruitment_in_period),Pfizer_recruited=sum(rr$trial=="Pfizer"&rr$recruitment_in_period),Moderna_recruited=sum(rr$trial=="Moderna"&rr$recruitment_in_period),threshold_date=mark,Pfizer_PCR=sum(w$Pfizer,na.rm=TRUE),Moderna_PCR=sum(w$Moderna,na.rm=TRUE),total_PCR=sum(w$weekly_observed_total),positivity_observed_weeks=sum(!is.na(pos)),sites=paste(sort(unique(cp_key(rr))),collapse="; "))
   summaries[[i]]<-summary
-  payload_counties[[i]]<-list(fips=f,name=cc$name[i],state=cc$state[i],recruited=summary$recruited,threshold=as.character(mark),pfizer=unname(w$Pfizer),moderna=unname(w$Moderna),positivity=unname(pos),cumulative=unname(w$cumulative_observed_total),recruitment=unname(w$cumulative_recruited),pcoverage=w$Pfizer_coverage,mcoverage=w$Moderna_coverage,total=summary$total_PCR,sites=summary$sites)
+  payload_counties[[i]]<-list(fips=f,name=cc$name[i],state=cc$state[i],recruited=summary$recruited,threshold=as.character(mark),pfizer=unname(w$Pfizer),moderna=unname(w$Moderna),positivity=unname(pos),cumulative=unname(w$cumulative_observed_total),recruitment=unname(w$cumulative_recruited),pcoverage=w$Pfizer_coverage,mcoverage=w$Moderna_coverage,denominator=w$pooled_at_risk,dp=w$Pfizer_at_risk,dm=w$Moderna_at_risk,exposed=w$pooled_exposed,recovered=w$pooled_recovered_removed,unknown=w$unresolved_recovery,scope=w$at_risk_scope,total=summary$total_PCR,sites=summary$sites)
  }
  weekly<-do.call(rbind,allweeks);summary<-do.call(rbind,summaries)
+ if(any(weekly$pooled_at_risk!=weekly$pooled_exposed-weekly$pooled_recovered_removed)||any(weekly$pooled_at_risk<0))stop('Population-at-risk reconciliation failed.')
  cp_csv(weekly,file.path(output,"county_weekly_report_data.csv"));cp_csv(summary,file.path(output,"county_summary.csv"))
  manifest<-rbind(m$manifest,p$manifest,background$manifest)
  code<-file.path(root,c('analyse_county_positivity_placebo_pcr.R','extract_moderna_county_inputs.R','extract_pfizer_county_inputs.R'))
@@ -211,10 +301,10 @@ analyse_county_positivity_placebo_pcr <- function(root=PHMPT_COUNTY_ROOT,inputs=
  cp_csv(manifest,file.path(output,"input_manifest.csv"))
  checks<-data.frame(check=c("All included records have a county","Included raw record keys unique","Weekly totals equal record ledger","Counties in report","Weeks per county","Adults with unresolved county","Included-before-geography records with unresolved county","Included records with repeated specimen reference"),value=c(all(!is.na(kept$county_fips)),!anyDuplicated(paste(kept$trial,kept$record_id)),sum(weekly$weekly_observed_total)==nrow(kept),nrow(cc),N,sum(is.na(r$county_fips)),sum(tests$included_before_geography&is.na(tests$county_fips)),sum(kept$repeated_specimen_reference)))
  cp_csv(checks,file.path(output,"validation_checks.csv"))
- payload<-list(version="2.0.0",start=as.character(start),end=as.character(end),weeks=as.character(weeks),ends=as.character(ends),age=age_min,threshold=threshold,window=placebo_window,lookback=lookback,cutoffs=as.list(cutoffs),unmapped_participants=sum(is.na(r$county_fips)),unmapped_positive=sum(tests$included_before_geography&is.na(tests$county_fips)),counties=payload_counties,checks=checks,manifest=manifest)
+ payload<-list(version="2.1.0",start=as.character(start),end=as.character(end),weeks=as.character(weeks),ends=as.character(ends),age=age_min,threshold=threshold,window=placebo_window,lookback=lookback,cutoffs=as.list(cutoffs),unmapped_participants=sum(is.na(r$county_fips)),unmapped_positive=sum(tests$included_before_geography&is.na(tests$county_fips)),counties=payload_counties,checks=checks,manifest=manifest)
  message("[4/5] Rendering offline HTML for ",nrow(cc)," counties")
  html<-file.path(output,"county_positivity_placebo_pcr.html");cp_html(payload,html)
- writeLines(c("Report v2.0.0",paste("Mode:",placebo_window),"Unit: distinct raw MB record. Exact duplicate rows removed; conflicting record keys stop execution.","Recruitment: both arms, both trials, AGE threshold applied, first date strictly over threshold.","Geography: trial site county proxy, Census 2020; all 50 states plus DC. Not participant residence.","Default: known blinded placebo follow-up from day after dose 1; no minimum efficacy-case symptom rule.","PRE_CROSSOVER retains unblinded follow-up until crossover/active vaccination where documented.","Pfizer symptom linkage: bounded same-illness visit or positive assessment within lookback. Moderna: COVID form positive assessment within lookback.","Missing positivity is never imputed. Dashed segments are visual bridges between observed endpoints only.","Counts after source cutoff or without eligible placebo person-days are NA, not zero.","The running total is observed records since report start, not unique patients or adjudicated efficacy cases.","Repeated specimen references remain in the record ledger for review; one MB record is not necessarily one physical specimen.","County-assignment omissions can affect every county's apparent volume; unresolved rows are separately exported."),file.path(output,"METHODS.txt"))
+ writeLines(c("Report v2.1.0",paste("Mode:",placebo_window),"Unit: distinct raw MB record. Exact duplicate rows removed; conflicting record keys stop execution.","Recruitment: both arms, both trials, AGE threshold applied, first date strictly over threshold.","Population at risk: distinct eligible placebo participants exposed during the week minus those removed after complete recorded symptom resolution before their weekly overlap began. Unresolved recovery remains included and is flagged. Recovery is a proxy, not PCR clearance or permanent immunity. The line uses an independent hidden zero-based Y scale; values are labelled at reporting points 10, 20, 30, etc.","Geography: trial site county proxy, Census 2020; all 50 states plus DC. Not participant residence.","Default: known blinded placebo follow-up from day after dose 1; no minimum efficacy-case symptom rule.","PRE_CROSSOVER retains unblinded follow-up until crossover/active vaccination where documented.","Pfizer symptom linkage: bounded same-illness visit or positive assessment within lookback. Moderna: COVID form positive assessment within lookback.","Missing positivity is never imputed. Dashed segments are visual bridges between observed endpoints only.","Counts after source cutoff or without eligible placebo person-days are NA, not zero.","The running total is observed records since report start, not unique patients or adjudicated efficacy cases.","Repeated specimen references remain in the record ledger for review; one MB record is not necessarily one physical specimen.","County-assignment omissions can affect every county's apparent volume; unresolved rows are separately exported."),file.path(output,"METHODS.txt"))
  message("[5/5] Complete: ",html)
  if(open_html)utils::browseURL(normalizePath(html,winslash="/"))
  invisible(list(output=output,html=html,summary=summary,weekly=weekly,tests=tests,roster=r,payload=payload))
@@ -3373,13 +3463,13 @@ CP_HTML <- r"---(<!doctype html><html lang="en"><head><meta charset="utf-8"><met
 </style></head><body><header><h1>County positivity and symptomatic placebo PCR records</h1><p id="period"></p></header><main>
 <div id="warning" class="banner"></div>
 <section class="panel"><div class="controls"><label>Find county or FIPS<input id="search" type="search" placeholder="County, state or FIPS"></label><label>County<select id="county"></select></label><label>County list<select id="filter"><option value="all">All counties</option><option value="sites">With assigned recruitment</option><option value="threshold">Above recruitment threshold</option><option value="positive">With counted PCR positives</option></select></label><button id="previous">Previous</button><button id="next">Next</button></div></section>
-<section class="panel"><h2 id="countytitle"></h2><div class="muted" id="countyinfo"></div><div class="stats" id="stats"></div><div class="legend"><span class="key" style="--c:var(--p)">Pfizer positive PCR records</span><span class="key" style="--c:var(--m)">Moderna positive PCR records</span><span>━ County NAAT positivity (%)</span><span>┄ Missing-positivity bridge</span><span style="color:#a20e68">│ Recruitment exceeds threshold</span></div>
+<section class="panel"><h2 id="countytitle"></h2><div class="muted" id="countyinfo"></div><div class="stats" id="stats"></div><div class="legend"><span class="key" style="--c:var(--p)">Pfizer positive PCR records</span><span class="key" style="--c:var(--m)">Moderna positive PCR records</span><span>━ County NAAT positivity (%)</span><span>┄ Missing-positivity bridge</span><span style="color:#7045a0"><span style="display:inline-block;width:22px;border-top:2px dashed #7045a0;vertical-align:middle"></span> Population at risk (hidden scale)</span><span style="color:#a20e68">│ Recruitment exceeds threshold</span></div>
 <p class="muted">Columns: weekly counts; numbers inside: each trial’s contribution; number above: running combined count since report start. Background line uses the left percentage axis; columns use the right count axis. These are different units.</p>
-<div class="controls"><label>View<select id="density"><option value="detail">Weekly detail — scroll horizontally</option><option value="overview">Whole period overview — labels on hover</option></select></label><button id="downloadSvg">Download chart SVG</button><button id="downloadCsv">Download county CSV</button></div>
+<p class="muted">The purple dashed line shows the combined placebo population at risk (exposed minus recovered), using an independent hidden Y scale starting at zero. N labels appear every tenth weekly point; every weekly value is available on hover and in the CSV. Its height is not read against either visible axis.</p><div class="controls"><label>View<select id="density"><option value="detail">Weekly detail — scroll horizontally</option><option value="overview">Whole period overview — labels on hover</option></select></label><button id="downloadSvg">Download chart SVG</button><button id="downloadCsv">Download county CSV</button></div>
 <div class="scroll" id="chartbox" style="margin-top:15px"><svg id="chart" class="chart" role="img"></svg></div>
-<p class="muted" id="coverage"></p><details class="details"><summary>Weekly values and data coverage</summary><div class="table-scroll"><table><thead><tr><th>Week (Thu–Wed)</th><th>Positivity %</th><th>Pfizer PCR</th><th>Moderna PCR</th><th>Running observed total</th><th>Cumulative recruitment</th><th>Pfizer coverage</th><th>Moderna coverage</th></tr></thead><tbody id="weekly"></tbody></table></div></details></section>
+<p class="muted" id="coverage"></p><details class="details"><summary>Weekly values and data coverage</summary><div class="table-scroll"><table><thead><tr><th>Week (Thu–Wed)</th><th>Positivity %</th><th>Pfizer PCR</th><th>Moderna PCR</th><th>Running observed total</th><th>Cumulative recruitment</th><th>Population at risk</th><th>Exposed placebo</th><th>Recovered removed</th><th>Unresolved recovery</th><th>Risk population scope</th><th>Pfizer coverage</th><th>Moderna coverage</th></tr></thead><tbody id="weekly"></tbody></table></div></details></section>
 <section class="panel index-panel"><h2>County index</h2><p class="muted">All 50 states and DC, using Census 2020 county/county-equivalent geography. Click a county to open its chart. Recruitment and PCR totals are from assigned sites only.</p><div class="table-scroll"><table><thead><tr><th>County</th><th>FIPS</th><th>Recruited</th><th>Threshold date</th><th>Pfizer PCR</th><th>Moderna PCR</th><th>Combined PCR</th><th>Positivity weeks</th></tr></thead><tbody id="index"></tbody></table></div></section>
-<section class="panel note"><h2>Reading this report</h2><p id="methods"></p><p>A county is the county of the trial site, <strong>not a verified participant residence or recruitment catchment</strong>. Recruitment combines both randomized arms of both trials and counts each participant once on RANDDT. The vertical line marks the exact date the combined count first exceeds the threshold, including recruitment before the report start. Sites with unresolved counties are excluded from county totals and reported separately.</p><p>A positive PCR record is not necessarily a unique specimen, illness episode or efficacy case. Distinct MB record keys are retained; identical duplicate rows are removed and conflicting keys stop the run. Repeated specimen references are flagged in the exported ledger. No antigen-only test is counted. Symptom linkage requires affirmative trial symptom-form evidence; AE terms alone do not qualify. Pfizer uses a bounded matching illness visit or the preceding assessment window; Moderna uses its positive COVID-form assessment dates. This is not a harmonized adjudication of the two sponsors’ efficacy definitions.</p><p>The county series is CDC’s observed seven-day NAAT positivity. Solid lines join consecutive available weeks; dashed lines bridge bounded gaps with no reported value. Dashed lines are visual guides, <strong>not imputed values</strong>. Leading/trailing gaps are not extrapolated, and no state-level substitute is used. Zero trial counts apply only where eligible placebo follow-up exists; unavailable weeks show “NA”. A flat running total after source coverage ends means no further observations are available.</p><p>Background positivity and trial test counts use different populations and denominators. Their overlay is descriptive; it does not estimate trial positivity, risk, vaccine efficacy or a causal association.</p><p>Sources: <a href="https://data.cdc.gov/d/jgk8-6dpn">CDC county archive</a> · <a href="https://phmpt.org/pfizer-16-plus-documents/">Pfizer released trial datasets</a> · <a href="https://phmpt.org/moderna-documents/">Moderna released trial datasets</a> · <a href="https://geocoding.geo.census.gov/geocoder/Geocoding_Services_API.html">Census 2020 county geocoder</a>. Exact local files and MD5 checksums are in input_manifest.csv.</p></section></main><div id="tip" class="tip"></div>
+<section class="panel note"><h2>Reading this report</h2><p id="methods"></p><p>A county is the county of the trial site, <strong>not a verified participant residence or recruitment catchment</strong>. Recruitment combines both randomized arms of both trials and counts each participant once on RANDDT. The vertical line marks the exact date the combined count first exceeds the threshold, including recruitment before the report start. Sites with unresolved counties are excluded from county totals and reported separately.</p><p>A positive PCR record is not necessarily a unique specimen, illness episode or efficacy case. Distinct MB record keys are retained; identical duplicate rows are removed and conflicting keys stop the run. Repeated specimen references are flagged in the exported ledger. No antigen-only test is counted. Symptom linkage requires affirmative trial symptom-form evidence; AE terms alone do not qualify. Pfizer uses a bounded matching illness visit or the preceding assessment window; Moderna uses its positive COVID-form assessment dates. This is not a harmonized adjudication of the two sponsors’ efficacy definitions.</p><p>The county series is CDC’s observed seven-day NAAT positivity. Solid lines join consecutive available weeks; dashed lines bridge bounded gaps with no reported value. Dashed lines are visual guides, <strong>not imputed values</strong>. Leading/trailing gaps are not extrapolated, and no state-level substitute is used. Zero trial counts apply only where eligible placebo follow-up exists; unavailable weeks show “NA”. A flat running total after source coverage ends means no further observations are available.</p><p>Population at risk uses placebo participants with at least one eligible follow-up day during the week, minus those already removed after complete recorded symptom resolution before their weekly overlap. Within-week recovery retains the participant for that week. Unknown recovery dates remain included and are flagged. This is the same recovery proxy used in the participant-rate report; it is not evidence of PCR clearance or permanent immunity. PCR-record columns retain their existing counting rules.</p><p>Background positivity and trial test counts use different populations and denominators. Their overlay is descriptive; it does not estimate trial positivity, risk, vaccine efficacy or a causal association.</p><p>Sources: <a href="https://data.cdc.gov/d/jgk8-6dpn">CDC county archive</a> · <a href="https://phmpt.org/pfizer-16-plus-documents/">Pfizer released trial datasets</a> · <a href="https://phmpt.org/moderna-documents/">Moderna released trial datasets</a> · <a href="https://geocoding.geo.census.gov/geocoder/Geocoding_Services_API.html">Census 2020 county geocoder</a>. Exact local files and MD5 checksums are in input_manifest.csv.</p></section></main><div id="tip" class="tip"></div>
 <script type="application/json" id="data">__PAYLOAD__</script><script>
 'use strict';
 const D=JSON.parse(document.getElementById('data').textContent),$=id=>document.getElementById(id),NS='http://www.w3.org/2000/svg';
@@ -3395,7 +3485,7 @@ function render(){current=shown.find(c=>c.fips===$('county').value)||current;con
 const total=c.pfizer.map((p,i)=>(p||0)+(c.moderna[i]||0)),max=Math.max(1,...total),cmax=Math.ceil(max*1.22),x=i=>100+(i+.5)*step,yP=v=>bottom-v/100*H,yC=v=>bottom-v/cmax*H;
 $('countytitle').textContent=`${c.name}, ${c.state}`;$('countyinfo').textContent=`FIPS ${c.fips} · ${c.sites||'No assigned trial sites'} · site-county proxy`;
 $('stats').innerHTML=`<div><strong>${fmt(c.recruited)}</strong><span class="muted">Combined recruitment</span></div><div><strong>${c.threshold||'Not reached'}</strong><span class="muted">First date over ${D.threshold} participants</span></div><div><strong>${fmt(c.total)}</strong><span class="muted">Observed symptomatic placebo PCR positives</span></div><div><strong>${fmt(c.positivity.filter(v=>v!=null).length)} / ${N}</strong><span class="muted">Weeks with county positivity</span></div>`;
-const svg=$('chart');svg.replaceChildren();svg.setAttribute('width',W);svg.setAttribute('height',bottom+140);svg.setAttribute('viewBox',`0 0 ${W} ${bottom+140}`);svg.setAttribute('aria-label',`${c.name} county weekly positive PCR records and background positivity`);
+const svg=$('chart');svg.replaceChildren();svg.setAttribute('width',W);svg.setAttribute('height',bottom+140);svg.setAttribute('viewBox',`0 0 ${W} ${bottom+140}`);svg.setAttribute('aria-label',`${c.name} county weekly positive PCR records, background positivity and population at risk`);
 add('rect',{x:0,y:0,width:W,height:bottom+140,fill:'white'});add('text',{x:100,y:24,'font-size':16,'font-weight':700},`${c.name}, ${c.state} · ${D.start}—${D.end}`);
 for(let tick=0;tick<=100;tick+=20){const y=yP(tick);add('line',{x1:100,x2:W-80,y1:y,y2:y,stroke:'#e3e9ee'});add('text',{x:87,y:y+5,'text-anchor':'end','font-size':12},`${tick}%`);}
 add('text',{x:12,y:48,'font-size':12},'County positivity');add('text',{x:W-5,y:48,'text-anchor':'end','font-size':12},'PCR records/week');
@@ -3412,19 +3502,24 @@ for(let i=0;i<N;i++){const xx=x(i),p=c.pfizer[i]||0,m=c.moderna[i]||0,bw=step*.7
 }
 const known=c.positivity.map((v,i)=>v==null?null:i).filter(i=>i!==null);for(let k=1;k<known.length;k++){const a=known[k-1],b=known[k];add('line',{x1:x(a),y1:yP(c.positivity[a]),x2:x(b),y2:yP(c.positivity[b]),stroke:'#172b3a','stroke-width':2,'stroke-dasharray':b-a>1?'6 5':'none'});}for(const i of known)add('circle',{cx:x(i),cy:yP(c.positivity[i]),r:detail?2.7:1.4,fill:'#172b3a'});
 if(detail)for(let i=0;i<N;i++){const xx=x(i),p=c.pfizer[i]||0,m=c.moderna[i]||0;if(p)add('text',{x:xx,y:yC(p/2)+4,'text-anchor':'middle','font-size':12,fill:'#172b3a','font-weight':700},p);if(m)add('text',{x:xx,y:yC(p+m/2)+4,'text-anchor':'middle','font-size':12,fill:'white','font-weight':700},m);if(p+m)add('text',{x:xx,y:yC(p+m)-9,'text-anchor':'middle','font-size':12,'font-weight':700,fill:'#172b3a',stroke:'white','stroke-width':3,'paint-order':'stroke'},c.cumulative[i]);}
+
+const riskValues=c.denominator.map((v,i)=>c.pcoverage[i]==='after source cutoff'&&c.mcoverage[i]==='after source cutoff'?null:v),riskMax=Math.max(1,...riskValues.filter(v=>v!=null))*1.2,yRisk=v=>bottom-v/riskMax*H,riskColor='#7045a0';
+for(let i=1;i<N;i++)if(riskValues[i-1]!=null&&riskValues[i]!=null)add('line',{'data-series':'population-at-risk','data-week-index':i,x1:x(i-1),y1:yRisk(riskValues[i-1]),x2:x(i),y2:yRisk(riskValues[i]),stroke:riskColor,'stroke-width':2.2,'stroke-dasharray':'9 5'});
+for(let i=9;i<N;i+=10)if(riskValues[i]!=null){add('circle',{'data-series':'population-at-risk-point',cx:x(i),cy:yRisk(riskValues[i]),r:3,fill:riskColor});add('text',{'data-series':'population-at-risk-label','data-week-index':i,x:x(i),y:yRisk(riskValues[i])-10,'text-anchor':'middle','font-size':12,'font-weight':700,fill:riskColor,stroke:'white','stroke-width':4,'paint-order':'stroke'},`N=${Number(riskValues[i]).toLocaleString('en-US')}`);}
 if(c.threshold){const raw=dateX(c.threshold),xx=Math.max(100,Math.min(W-80,raw));add('line',{x1:xx,x2:xx,y1:top,y2:bottom,stroke:'#a20e68','stroke-width':2});add('text',{x:Math.min(xx+6,W-260),y:top+16,'font-size':12,fill:'#a20e68','font-weight':700,stroke:'white','stroke-width':4,'paint-order':'stroke'},`>${D.threshold} recruited: ${c.threshold}${raw<100?' (before range)':''}`);}
 // Transparent weekly hit areas provide a consistent mouse/focus tooltip.
-for(let i=0;i<N;i++){const txt=`${D.weeks[i]} to ${D.ends[i]}\nCounty positivity: ${c.positivity[i]==null?'not reported':c.positivity[i]+'%'}\nPfizer positive PCR: ${fmt(c.pfizer[i])} (${c.pcoverage[i]})\nModerna positive PCR: ${fmt(c.moderna[i])} (${c.mcoverage[i]})\nRunning observed combined total: ${fmt(c.cumulative[i])}\nCumulative recruitment: ${fmt(c.recruitment[i])}`;const e=add('rect',{x:100+i*step,y:top,width:step,height:H+88,fill:'#ffffff','fill-opacity':0,'pointer-events':'all',tabindex:0,'aria-label':txt});add('title',{},txt,e);e.addEventListener('mousemove',ev=>{$('tip').textContent=txt;$('tip').style.display='block';$('tip').style.left=Math.min(ev.clientX+14,window.innerWidth-390)+'px';$('tip').style.top=Math.min(ev.clientY+10,window.innerHeight-210)+'px';});e.addEventListener('mouseleave',()=>{$('tip').style.display='none';});}
+for(let i=0;i<N;i++){const txt=`${D.weeks[i]} to ${D.ends[i]}\nCounty positivity: ${c.positivity[i]==null?'not reported':c.positivity[i]+'%'}\nPfizer positive PCR: ${fmt(c.pfizer[i])} (${c.pcoverage[i]})\nModerna positive PCR: ${fmt(c.moderna[i])} (${c.mcoverage[i]})\nRunning observed combined total: ${fmt(c.cumulative[i])}\nCumulative recruitment: ${fmt(c.recruitment[i])}\nPopulation at risk: ${fmt(riskValues[i])} (${c.scope[i]})\nExposed placebo: ${fmt(c.exposed[i])}; recovered removed: ${fmt(c.recovered[i])}\nPfizer at risk: ${fmt(c.dp[i])}; Moderna at risk: ${fmt(c.dm[i])}\nUnresolved recovery: ${fmt(c.unknown[i])}`;const e=add('rect',{x:100+i*step,y:top,width:step,height:H+88,fill:'#ffffff','fill-opacity':0,'pointer-events':'all',tabindex:0,'aria-label':txt});add('title',{},txt,e);e.addEventListener('mousemove',ev=>{$('tip').textContent=txt;$('tip').style.display='block';$('tip').style.left=Math.min(ev.clientX+14,window.innerWidth-390)+'px';$('tip').style.top=Math.min(ev.clientY+10,window.innerHeight-210)+'px';});e.addEventListener('mouseleave',()=>{$('tip').style.display='none';});}
 add('text',{x:100,y:bottom+115,'font-size':11,fill:'#526674'},'Coloured coverage rails: eligible placebo follow-up; pale segments: partial cutoff week; grey: unavailable/no eligible follow-up. Dashed positivity: missing observations.');
+add('text',{x:100,y:bottom+132,'font-size':11,fill:'#7045a0'},'Population at risk: purple dashed line, independent hidden scale; N labels every tenth week.');
 $('coverage').textContent=`${D.window==='BLINDED'?'Blinded':'Pre-crossover'} placebo follow-up; Pfizer data through ${D.cutoffs.Pfizer}, Moderna through ${D.cutoffs.Moderna}. Background continues through ${D.end}. Counts are positive test records, not unique cases.`;
-$('weekly').innerHTML=D.weeks.map((w,i)=>`<tr><td>${w} — ${D.ends[i]}</td><td>${c.positivity[i]==null?'NA':c.positivity[i]}</td><td>${fmt(c.pfizer[i])}</td><td>${fmt(c.moderna[i])}</td><td>${fmt(c.cumulative[i])}</td><td>${fmt(c.recruitment[i])}</td><td>${esc(c.pcoverage[i])}</td><td>${esc(c.mcoverage[i])}</td></tr>`).join('');
+$('weekly').innerHTML=D.weeks.map((w,i)=>`<tr><td>${w} — ${D.ends[i]}</td><td>${c.positivity[i]==null?'NA':c.positivity[i]}</td><td>${fmt(c.pfizer[i])}</td><td>${fmt(c.moderna[i])}</td><td>${fmt(c.cumulative[i])}</td><td>${fmt(c.recruitment[i])}</td><td>${fmt(c.denominator[i])}</td><td>${fmt(c.exposed[i])}</td><td>${fmt(c.recovered[i])}</td><td>${fmt(c.unknown[i])}</td><td>${esc(c.scope[i])}</td><td>${esc(c.pcoverage[i])}</td><td>${esc(c.mcoverage[i])}</td></tr>`).join('');
 }
 function download(text,type,name){const u=URL.createObjectURL(new Blob([text],{type})),a=document.createElement('a');a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);}
 $('search').addEventListener('input',filter);$('filter').addEventListener('change',filter);$('county').addEventListener('change',render);$('density').addEventListener('change',render);
 $('previous').onclick=()=>{const i=shown.findIndex(c=>c.fips===current?.fips);if(i>0){$('county').value=shown[i-1].fips;render();}};$('next').onclick=()=>{const i=shown.findIndex(c=>c.fips===current?.fips);if(i<shown.length-1){$('county').value=shown[i+1].fips;render();}};
 $('index').onclick=e=>{const b=e.target.closest('button[data-fips]');if(b){$('county').value=b.dataset.fips;render();$('countytitle').scrollIntoView({behavior:'smooth'});}};
 $('downloadSvg').onclick=()=>{if(current)download(new XMLSerializer().serializeToString($('chart')),'image/svg+xml',`${current.fips}_county_PCR_positivity.svg`);};
-$('downloadCsv').onclick=()=>{if(!current)return;const c=current,rows=['county_fips,week_start,week_end,positivity_pct,Pfizer_PCR,Moderna_PCR,cumulative_observed_total,cumulative_recruited,Pfizer_coverage,Moderna_coverage'];D.weeks.forEach((w,i)=>rows.push([c.fips,w,D.ends[i],c.positivity[i]??'',c.pfizer[i]??'',c.moderna[i]??'',c.cumulative[i],c.recruitment[i],c.pcoverage[i],c.mcoverage[i]].join(',')));download(rows.join('\r\n'),'text/csv',`${c.fips}_county_weekly.csv`);};
+$('downloadCsv').onclick=()=>{if(!current)return;const c=current,rows=['county_fips,week_start,week_end,positivity_pct,Pfizer_PCR,Moderna_PCR,cumulative_observed_total,cumulative_recruited,Pfizer_at_risk,Moderna_at_risk,population_at_risk,exposed_placebo,recovered_removed,unresolved_recovery,at_risk_scope,Pfizer_coverage,Moderna_coverage'];D.weeks.forEach((w,i)=>rows.push([c.fips,w,D.ends[i],c.positivity[i]??'',c.pfizer[i]??'',c.moderna[i]??'',c.cumulative[i],c.recruitment[i],c.dp[i],c.dm[i],c.denominator[i],c.exposed[i],c.recovered[i],c.unknown[i],c.scope[i],c.pcoverage[i],c.mcoverage[i]].join(',')));download(rows.join('\r\n'),'text/csv',`${c.fips}_county_weekly.csv`);};
 filter();
 </script></body></html>
 )---"

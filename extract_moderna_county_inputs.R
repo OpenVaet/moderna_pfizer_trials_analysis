@@ -1,8 +1,8 @@
-# Standalone Moderna native-table extractor for the county PCR report | v2.0.0
+# Standalone Moderna native-table extractor for the county PCR report | v2.1.0
 # Run inside moderna_pfizer_trials_analysis. No prior audit CSVs are read.
 # Source without running: options(phmpt.autorun=FALSE).
 PHMPT_MODERNA_COUNTY_ROOT <- getwd()
-PHMPT_MODERNA_COUNTY_FILES <- list(ADSL='',MB='',ADMB='',SUPPMB='',ADSYMP='')
+PHMPT_MODERNA_COUNTY_FILES <- list(ADSL='',MB='',ADMB='',SUPPMB='',ADSYMP='',CE='')
 PHMPT_MODERNA_COUNTY_OUTPUT <- ""
 PHMPT_MODERNA_COUNTY_AGE_MIN <- 18
 PHMPT_MODERNA_COUNTY_PLACEBO_WINDOW <- "BLINDED"
@@ -273,6 +273,7 @@ pt_specs <- function(domain) switch(domain,
  ADMB=list(required=c('STUDYID','USUBJID','MBSEQ','PARAMCD','AVALC'),optional=c('DTYPE','MBDTC','ADT','VISIT','AVISIT','ABLFL','LOCALFL','MBSTAT','MBMETHOD')),
  AE=list(required=c('STUDYID','USUBJID','AESEQ','AETERM','AEDECOD','AESTDTC'),optional=c('AELLT','AEENDTC','AEENRF','AEOUT','AESER','AEREL')),
  ADSYMP=list(required=c('STUDYID','USUBJID','PARAMCD','AVALC','ADT'),optional=c('ASEQ','PARAM','ASTDT','AENDT','SRCDOM','SRCSEQ','SRCVAR','LNKID','SEV','CUTOFFDT')),
+ CE=list(required=c('STUDYID','USUBJID','CESEQ','CESPID','CETERM','CECAT','CEOCCUR','CESTDTC','CEENDTC'),optional=c('CELNKGRP','CESCAT','CESTAT')),
  SUPPMB=list(required=c('STUDYID','USUBJID','IDVAR','IDVARVAL','QNAM','QVAL'),optional=c('QLABEL','QORIG','QEVAL')),
  stop('Unsupported domain'))
 pt_read <- function(path,domain) {
@@ -347,7 +348,7 @@ pt_candidate_diff <- function(x,y,domain,file_a,file_b,max_examples=200L) {
  a<-pt_canonical(x);b<-pt_canonical(y)
  keys<-switch(domain,ADSL='USUBJID',AE=c('USUBJID','AESEQ'),MB=c('USUBJID','MBSEQ'),
   ADMB=c('USUBJID','MBSEQ','PARAMCD','DTYPE'),ADSYMP=c('USUBJID','ASEQ'),
-  SUPPMB=c('USUBJID','IDVAR','IDVARVAL','QNAM'))
+  SUPPMB=c('USUBJID','IDVAR','IDVARVAL','QNAM'),CE=c('USUBJID','CESEQ'))
  key<-function(z)do.call(paste,c(z[keys],sep=' | '))
  keyed<-length(keys)>0&&all(keys%in%intersect(names(a),names(b)))
  if(keyed){ka<-key(a);kb<-key(b);keyed<-!anyDuplicated(ka)&&!anyDuplicated(kb)}
@@ -574,7 +575,7 @@ mc_tests <- function(b,s,lookback) {
 extract_moderna_county_inputs <- function(root=PHMPT_MODERNA_COUNTY_ROOT,files=PHMPT_MODERNA_COUNTY_FILES,
  output=PHMPT_MODERNA_COUNTY_OUTPUT,age_min=PHMPT_MODERNA_COUNTY_AGE_MIN,placebo_window=PHMPT_MODERNA_COUNTY_PLACEBO_WINDOW,lookback=PHMPT_MODERNA_COUNTY_LOOKBACK) {
  cp_options(age_min,placebo_window,lookback);root<-normalizePath(root,winslash='/',mustWork=TRUE);out<-cp_output(root,output,'Moderna')
- for(n in c('ADSL','MB','ADMB','SUPPMB','ADSYMP'))if(is.null(files[[n]]))files[[n]]<-''
+ for(n in c('ADSL','MB','ADMB','SUPPMB','ADSYMP','CE'))if(is.null(files[[n]]))files[[n]]<-''
  a<-pt_pick(root,'Prod','ADSL',files$ADSL,out);ctx<-pt_context(a$data,out)
  if(nrow(ctx)!=30415)stop('Expected 30,415 randomized Moderna S3 P301 participants.')
  if(any(!is.finite(suppressWarnings(as.numeric(ctx$AGE)))))stop('Invalid/missing Moderna AGE.')
@@ -583,6 +584,9 @@ extract_moderna_county_inputs <- function(root=PHMPT_MODERNA_COUNTY_ROOT,files=P
  d<-pt_pick(root,'Prod','ADMB',files$ADMB,out,submission)
  s<-pt_pick(root,'Prod','SUPPMB',files$SUPPMB,out,submission)
  y<-pt_pick(root,'Prod','ADSYMP',files$ADSYMP,out,submission)
+ ce<-pt_pick(root,'Prod','CE',files$CE,out,submission)
+ ce$data<-cp_unique(ce$data,c('USUBJID','CESEQ'),'Moderna_CE',out)
+ cp_need(y$data,c('ASEQ','LNKID'),'Moderna recovery ADSYMP')
  p<-pt_records(b$data,d$data,s$data,ctx,out);e<-mc_symptoms(y$data,ctx,out)
  z<-ctx[suppressWarnings(as.numeric(ctx$AGE))>=age_min,,drop=FALSE]
  finish<-if(placebo_window=='BLINDED')z$blinded_end else pmin(z$calendar_end,ifelse(is.finite(z$AP02SDT),z$AP02SDT-1,Inf),ifelse(is.finite(z$TR02SDT),z$TR02SDT-1,Inf),ifelse(is.finite(z$EUAVACDT),z$EUAVACDT-1,Inf))
@@ -591,11 +595,11 @@ extract_moderna_county_inputs <- function(root=PHMPT_MODERNA_COUNTY_ROOT,files=P
  placebo=cp_upper(z$TRT01P)=='PLACEBO'&cp_upper(z$TRT01A)=='PLACEBO',followup_start=as.Date(z$followup_start,origin='1970-01-01'),followup_end=as.Date(finish,origin='1970-01-01'))
  sites<-cp_sites();if(any(!roster$SITEID%in%sites$SITEID))stop('Moderna site missing from embedded county lookup.')
  tests<-mc_tests(p,e,lookback)
- manifest<-do.call(rbind,lapply(list(a,b,d,s,y),function(x)x$manifest))
- manifest$input<-c('Moderna_ADSL','moderna_mb','moderna_admb','moderna_suppmb','moderna_adsymp')
+ manifest<-do.call(rbind,lapply(list(a,b,d,s,y,ce),function(x)x$manifest))
+ manifest$input<-c('Moderna_ADSL','moderna_mb','moderna_admb','moderna_suppmb','moderna_adsymp','moderna_ce')
  cp_csv(manifest,file.path(out,'input_manifest.csv'));cp_csv(roster,file.path(out,'participants.csv'));cp_csv(tests,file.path(out,'pcr_records.csv'));cp_csv(sites,file.path(out,'site_counties.csv'))
  message('Moderna native extraction complete: ',nrow(roster),' adults; ',nrow(tests),' PCR records.')
- invisible(list(roster=roster,tests=tests,sites=sites,manifest=manifest[,c('input','path','md5')],output=out))
+ invisible(list(roster=roster,tests=tests,sites=sites,recovery_symptoms=y$data,recovery_ce=ce$data,manifest=manifest[,c('input','path','md5')],output=out))
 }
 cp_sites <- function() read.csv(text=r"---(trial,SITEID,county_fips,status,source,query,county_name,geography_vintage
 Moderna,US300,31055,Census2020 supplied-coordinate match,Prior coordinate-to-Census-2020 lookup; coordinate retained in query; original clinical_trial_sites_moderna catalogue,"-96.080211,41.288909",Douglas County,2020

@@ -1,4 +1,4 @@
-# Standalone Pfizer native-table extractor for the county PCR report | v2.0.0
+# Standalone Pfizer native-table extractor for the county PCR report | v2.1.0
 # Run inside moderna_pfizer_trials_analysis. No prior audit CSVs are read.
 # Source without running: options(phmpt.autorun=FALSE).
 PHMPT_PFIZER_COUNTY_ROOT <- getwd()
@@ -293,7 +293,7 @@ extract_pfizer_county_inputs <- function(root=PHMPT_PFIZER_COUNTY_ROOT,files=PHM
  cp_options(age_min,placebo_window,lookback);root<-normalizePath(root,winslash='/',mustWork=TRUE);out<-cp_output(root,output,'Pfizer')
  for(n in c('ADSL','MB','ADSYMPT'))if(is.null(files[[n]]))files[[n]]<-''
  a<-pc_pick(root,'ADSL',files$ADSL,out);b<-pc_pick(root,'MB',files$MB,out);s<-pc_pick(root,'ADSYMPT',files$ADSYMPT,out)
- roster<-pc_roster(a$data,age_min,placebo_window);a$data<-b$data<-s$data<-NULL
+ roster<-pc_roster(a$data,age_min,placebo_window);recovery_symptoms<-s$data;a$data<-b$data<-s$data<-NULL
  tests<-cp_pfizer_tests(b$path,s$path,out,lookback);sites<-cp_sites()
  # A new/unknown site stays explicitly unresolved; never infer a county from ID.
  missing<-setdiff(roster$SITEID,sites$SITEID)
@@ -301,6 +301,6 @@ extract_pfizer_county_inputs <- function(root=PHMPT_PFIZER_COUNTY_ROOT,files=PHM
  manifest<-data.frame(input=c('Pfizer_ADSL','pfizer_mb','pfizer_adsympt'),path=normalizePath(c(a$path,b$path,s$path),winslash='/'),md5=c(a$md5,b$md5,s$md5))
  cp_csv(roster,file.path(out,'participants.csv'));cp_csv(tests,file.path(out,'pcr_records.csv'));cp_csv(sites,file.path(out,'site_counties.csv'));cp_csv(manifest,file.path(out,'input_manifest.csv'))
  message('Pfizer native extraction complete: ',nrow(roster),' US adults; ',nrow(tests),' PCR records.')
- invisible(list(roster=roster,tests=tests,sites=sites,manifest=manifest,output=out))
+ invisible(list(roster=roster,tests=tests,sites=sites,recovery_symptoms=recovery_symptoms,manifest=manifest,output=out))
 }
 if(isTRUE(getOption('phmpt.autorun',TRUE)))extract_pfizer_county_inputs()
