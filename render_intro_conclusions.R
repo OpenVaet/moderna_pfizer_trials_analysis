@@ -1,0 +1,26 @@
+render_intro_conclusions <- function(root,out=file.path(root,'audit_assets')) {
+  a<-subset(audit_read(root,'n_attendance_tests'),scope=='primary'&measure=='N_result')
+  p<-audit_order(subset(audit_read(root,'n_target_serology_summary'),scope=='primary'))
+  audit_open(out,'V01','What the expanded audit currently supports','Initial case comparison, updated source review, and independent antibody evidence','[1,14-21]',height=1600)
+  audit_card(.04,.77,.44,.24,'Initial first-case comparison','897 Moderna / 674 Pfizer. Count ratio 1.331; person-time ratio 1.288. Provisional: the earlier Pfizer adapter omitted the local-result stream.',color='#9a6d24')
+  audit_card(.52,.77,.44,.24,'Scheduled anti-N availability',sprintf('Placebo excess in missing results: Moderna +%.2f percentage points; Pfizer +%.2f points. Recorded attendance is lower in both placebo arms.',a$missing_difference_pp[a$trial=='Moderna'],a$missing_difference_pp[a$trial=='Pfizer']),color=audit_palette['Moderna'])
+  audit_card(.04,.49,.44,.24,'Additional antibody detections',paste0('No earlier positive virologic result at the scheduled draw: Moderna placebo ',p$no_prior_positive_any[4],'; Pfizer placebo ',p$no_prior_positive_any[2],'. These are infection indications, not automatically missed efficacy cases.'),color=audit_palette['positive'])
+  audit_card(.52,.49,.44,.24,'Local testing requires assay review','Pfizer has 622 mRNA vs 805 placebo negative local records. Supported PCR: 138 vs 144. Most of the negative-result difference is in unresolved assays.',color=audit_palette['Pfizer'])
+  audit_note('The initial case and pathway comparisons require rerunning after local-source reconciliation and deduplication. No corrected cross-trial case ratio is claimed.')
+  dev.off()
+
+  audit_open(out,'V32','What is established: attendance and antibody evidence','Replacement for the first old conclusion visual | Current evidence assessment','[14,17-20]',height=1600)
+  audit_card(.04,.77,.92,.17,'Attendance imbalance: observed','Both placebo arms have lower recorded attendance and anti-N availability. Moderna has the larger missing-result difference in the adult CONUS cohort. Reasons for missingness remain to be adjudicated.')
+  audit_card(.04,.56,.92,.17,'Anti-N response after PCR: conditional evidence','Among assessable scheduled draws at least 14 days after PCR, observed positivity is lower in both mRNA arms. Missing draws remain a separate category; these subsets are not an arm-wide sensitivity estimate.')
+  audit_card(.04,.35,.92,.17,'Additional infection evidence: observed','Scheduled-visit detections with no earlier virologic positive: Moderna 26 mRNA / 51 placebo; Pfizer 20 / 53. Symptoms, timing, assay uncertainty and overlap must be checked before any efficacy classification.')
+  audit_note('Recorded anti-N positivity supports infection detection; it does not identify a precise infection date or prove a missed symptomatic efficacy endpoint.')
+  dev.off()
+
+  audit_open(out,'V33','What remains unresolved: source completeness and comparison','Replacement for the second old conclusion visual | Required next adjudications','[1,4,8,13,15-16,19,21]',height=1600)
+  audit_card(.04,.77,.92,.17,'Initial first-case and pathway ratios: require rerunning','Add the omitted Pfizer local stream, determine assay classes, link records to episodes and specimens, deduplicate routes, then rebuild first qualifying cases and event-free person-time.',color='#9a6d24')
+  audit_card(.04,.56,.92,.17,'Local testing imbalance: broad stream observed','Pfizer shows a larger negative-result and symptom-linked local-capture difference. A comprehensive PCR-only imbalance is not established while most assay identities remain unresolved.',color=audit_palette['Pfizer'])
+  audit_card(.04,.35,.92,.17,'Priority record corrections: concrete evidence recovered','Four of the five severe-episode queue participants have local results. One is the positive result for 10841470 on 31 December 2020. Assay adjudication is still needed; no automatic case addition follows.',color=audit_palette['Moderna'])
+  audit_note('Later anti-N sampling opportunities differ substantially. Current data do not quantify a causal contribution of testing, attendance or follow-up selection to the initial case gap.')
+  dev.off()
+  invisible(TRUE)
+}

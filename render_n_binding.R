@@ -1,0 +1,48 @@
+render_n_binding <- function(root,out=file.path(root,'audit_assets')) {
+  a<-audit_order(subset(audit_read(root,'n_attendance_summary'),scope=='primary'))
+  p<-audit_order(subset(audit_read(root,'n_target_serology_summary'),scope=='primary'))
+  r<-audit_order(subset(audit_read(root,'n_target_PCR_seroconversion'),scope=='primary'&lag_min==14))
+  l<-audit_order(subset(audit_read(root,'n_longitudinal_summary'),scope=='primary'&mode=='PLUS_DECISION_BOUNDARY'))
+  strict<-audit_order(subset(audit_read(root,'n_longitudinal_summary'),scope=='primary'&mode=='STRICT_BLINDED'))
+  stopifnot(all(a$visit<=a$N),all(a$N_result+a$N_missing==a$N),all(p$N_positive==p$prior_PCR_positive+p$other_local_positive_no_PCR+p$no_prior_positive_any))
+  audit_open(out,'V23','Recorded attendance and usable anti-N results','Visit 3 for Pfizer; Day 57 for Moderna | Mature adult CONUS cohort | Common cutoff: 13 March 2021','[14,17-18]')
+  rows<-cbind(audit_labels,audit_n(a$N),paste0(audit_n(a$visit),'\n',audit_pct(a$visit,a$N,2)),paste0(audit_n(a$N_result),'\n',audit_pct(a$N_result,a$N,2)),paste0(audit_n(a$N_missing),'\n',audit_pct(a$N_missing,a$N,2)))
+  audit_table(c('Trial / arm','Eligible\nparticipants','Recorded\nvisit','Usable\nanti-N result','Missing usable\nanti-N result'),rows,c(.20,.16,.21,.21,.22),top=.76,bottom=.36,fontsize=14)
+  audit_text(.04,.29,'Placebo excess in missing anti-N results',size=16,bold=TRUE)
+  audit_text(.04,.24,'Pfizer: +0.59 percentage points     |     Moderna: +1.32 percentage points',size=15)
+  audit_note('Attendance is documented by SV; result availability by original IS visit label. Withdrawals remain in the denominator. A visit is not proof of a blood draw.')
+  dev.off()
+
+  s<-subset(audit_read(root,'n_attendance_PCR_strata'),scope=='primary'&cohort=='ALL_MATURE')
+  s$PCR_before_target<-toupper(as.character(s$PCR_before_target))=='TRUE'
+  z0<-audit_order(subset(s,!PCR_before_target));z1<-audit_order(subset(s,PCR_before_target))
+  audit_open(out,'V24','Missing anti-N results and prior PCR positivity','PCR history through the nominal target date | Same attendance cohort | Post-randomization strata','[14,17]')
+  rows<-cbind(audit_labels,paste0(audit_n(z0$missing_N),' / ',audit_n(z0$N),'\n',audit_pct(z0$missing_N,z0$N,2)),paste0(audit_n(z1$missing_N),' / ',audit_n(z1$N),'\n',audit_pct(z1$missing_N,z1$N,2)))
+  audit_table(c('Trial / arm','No recorded prior PCR positive:\nmissing anti-N / participants','Prior PCR positive:\nmissing anti-N / participants'),rows,c(.24,.38,.38),top=.76,bottom=.31,fontsize=14)
+  audit_note('Missing results are more common after recorded PCR positivity. Residual arm differences remain without prior PCR positivity; these strata do not identify the cause.')
+  dev.off()
+
+  audit_open(out,'V25','Anti-N response at least 14 days after PCR','Scheduled Visit 3 / Day 57 draw | Documented negative baseline | Assessable participants only','[17-18,20]')
+  audit_stacks(audit_labels,cbind(r$N_positive,r$N_negative),audit_palette[c('positive','negative')],c('Anti-N positive','Anti-N negative'),denom=r$PCR_before_target)
+  audit_note('Each participant contributes once. These small, selected subsets include infections after dose 1; infection after completion of vaccination is not required. Missing draws are not negatives.')
+  dev.off()
+
+  audit_open(out,'V26','Later antibody response: retain the missing category','Including labelled unblinding-day draws | Anti-N result at least 14 days after first supported PCR positive','[17-20]')
+  mat<-cbind(l$lag14_POSITIVE,l$lag14_NEGATIVE_ONLY,l$lag14_NO_SUITABLE_N_DRAW)
+  stopifnot(all(rowSums(mat)==l$PCR_positive))
+  audit_stacks(audit_labels,mat,audit_palette[c('positive','negative','missing')],c('Anti-N positive','Negative results only','No suitable later result'),denom=l$PCR_positive)
+  audit_note('PCR observation remains strictly blinded. Decision-day antibody inclusion is a sensitivity, not proof of pre-unblinding collection. Later sampling opportunities differ substantially.')
+  dev.off()
+
+  audit_open(out,'V27','What scheduled anti-N testing adds','Baseline-negative participants | Virologic history ends at the actual scheduled blood draw','[15-18]')
+  audit_stacks(audit_labels,cbind(p$prior_PCR_positive,p$other_local_positive_no_PCR,p$no_prior_positive_any),c('#52748b','#d9a641',audit_palette['positive']),c('Earlier supported PCR+','Other local positive, PCR unresolved','No earlier virologic positive'),percentage=FALSE)
+  audit_note('Additional detections without earlier virologic positivity: Pfizer 20 mRNA / 53 placebo; Moderna 26 / 51. They are not automatically missed symptomatic efficacy cases.')
+  dev.off()
+
+  audit_open(out,'V28','Seroconversions without PCR detection over follow-up','Distinct baseline-negative participants | Common cutoff: 13 March 2021 | Availability differs by trial','[15-19]')
+  rows<-cbind(audit_labels,audit_n(strict$no_PCR_any_blinded),audit_n(l$no_PCR_any_blinded),audit_n(l$no_PCR_any_blinded-l$no_any_positive_any_blinded),audit_n(l$no_any_positive_any_blinded))
+  audit_table(c('Trial / arm','Strictly blinded:\nno supported PCR+','Add decision-day draws:\nno supported PCR+','Of these: other\npositive local test','No virologic positive\nincluding local tests'),rows,c(.19,.20,.23,.18,.20),top=.76,bottom=.31,fontsize=13)
+  audit_note('The final three columns include labelled unblinding-day antibody draws; PCR censoring is unchanged. These are observed detections under unequal sampling, not comparable infection rates.')
+  dev.off()
+  invisible(TRUE)
+}
